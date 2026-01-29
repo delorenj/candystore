@@ -1,0 +1,66 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "candystore"
+version = "0.1.0"
+description = "Event storage and audit trail service for 33GOD ecosystem"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.0",
+    "aio-pika>=9.3.0",
+    "orjson>=3.9.0",
+    "sqlalchemy>=2.0.25",
+    "aiosqlite>=0.19.0",  # Async SQLite
+    "asyncpg>=0.29.0",     # Async PostgreSQL (optional)
+    "alembic>=1.13.0",     # Database migrations
+    "python-dotenv>=1.0.0",
+    "structlog>=24.1.0",   # Structured logging
+    "prometheus-client>=0.19.0",  # Metrics
+    "typer>=0.9.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "pytest-timeout>=2.2.0",
+    "httpx>=0.26.0",  # For testing FastAPI
+    "faker>=22.0.0",  # For generating test data
+]
+
+[project.scripts]
+candystore = "candystore.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/candystore"]
+
+[tool.uv]
+package = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "--strict-markers",
+    "--tb=short",
+    "--cov=candystore",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "S", "B", "A", "C4", "T20"]
+ignore = ["S101"]  # Allow assert in tests
