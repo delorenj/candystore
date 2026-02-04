@@ -1,6 +1,6 @@
 """Database connection and operations."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -75,6 +75,12 @@ class Database:
         Returns:
             Created StoredEvent instance
         """
+        # Normalize timestamps to UTC + tz-aware to match TIMESTAMPTZ columns
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        else:
+            timestamp = timestamp.astimezone(timezone.utc)
+
         async with self.session_factory() as session:
             stored_event = StoredEvent(
                 id=event_id,
