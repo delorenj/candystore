@@ -1,9 +1,9 @@
 """Database models for event storage."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import JSON, Index, String, Text
+from sqlalchemy import JSON, DateTime, Index, String
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -31,10 +31,13 @@ class StoredEvent(Base):
     target: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     routing_key: Mapped[str] = mapped_column(String(255), nullable=False)
 
-    # Timestamps
-    timestamp: Mapped[datetime] = mapped_column(nullable=False, index=True)
+    # Timestamps (timezone-aware; stored in UTC)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     stored_at: Mapped[datetime] = mapped_column(
-        nullable=False, default=datetime.utcnow, index=True
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        index=True,
     )
 
     # Full event payload (as JSON)
