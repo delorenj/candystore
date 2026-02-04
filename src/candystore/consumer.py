@@ -25,8 +25,8 @@ from candystore.metrics import (
 logger = get_logger(__name__)
 
 
-class EventEnvelope(BaseModel):
-    """Event envelope from Bloodbank (matches event_producers.events.EventEnvelope)."""
+class EnvelopeV1(BaseModel):
+    """Legacy Bloodbank envelope (older v1 shape)."""
 
     id: str
     ts: datetime
@@ -36,6 +36,41 @@ class EventEnvelope(BaseModel):
     target: str | None = None
     correlation_id: str | None = None
     session_id: str | None = None
+
+
+class SourceV2(BaseModel):
+    """Source object in current Bloodbank envelope."""
+
+    host: str
+    type: str
+    app: str | None = None
+    meta: dict[str, Any] | None = None
+
+
+class EnvelopeV2(BaseModel):
+    """Current Bloodbank envelope (matches event_producers.events.base.EventEnvelope)."""
+
+    event_id: str
+    event_type: str
+    timestamp: datetime
+    version: str | None = None
+    source: SourceV2
+    correlation_ids: list[str] = []
+    agent_context: dict[str, Any] | None = None
+    payload: dict[str, Any]
+
+
+class NormalizedEnvelope(BaseModel):
+    """Internal normalized envelope used for storage."""
+
+    event_id: str
+    event_type: str
+    timestamp: datetime
+    source: str
+    target: str | None
+    correlation_id: str | None
+    session_id: str | None
+    payload: dict[str, Any]
 
 
 class EventConsumer:
@@ -153,8 +188,8 @@ class EventConsumer:
                 # Parse message body
                 body = orjson.loads(message.body)
 
-                # Validate against EventEnvelope schema
-                envelope = EventEnvelope.model_validate(body)
+                # Validate envelope (supports both legacy + current shapes)
+                envelope = self._normalize_envelope(body)
 
                 # Track event received
                 events_received_total.labels(
@@ -164,7 +199,7 @@ class EventConsumer:
 
                 logger.debug(
                     "event_received",
-                    event_id=envelope.id,
+                    event_id=envelope.event_id,
                     event_type=envelope.event_type,
                     source=envelope.source,
                     routing_key=routing_key,
@@ -185,7 +220,7 @@ class EventConsumer:
 
                 logger.info(
                     "event_stored",
-                    event_id=envelope.id,
+                    event_id=envelope.event_id,
                     event_type=envelope.event_type,
                     latency_ms=round(latency_ms, 2),
                 )
@@ -214,23 +249,55 @@ class EventConsumer:
                     routing_key=routing_key,
                 )
 
-    async def _store_event(self, envelope: EventEnvelope, routing_key: str) -> None:
+    def _normalize_envelope(self, body: dict[str, Any]) -> NormalizedEnvelope:
+        """Normalize legacy/current Bloodbank envelopes into a single storage shape."""
+        try:
+            env2 = EnvelopeV2.model_validate(body)
+            source_app = env2.source.app or "unknown"
+            source = f"{source_app}@{env2.source.host}"
+            correlation_id = env2.correlation_ids[0] if env2.correlation_ids else None
+
+            return NormalizedEnvelope(
+                event_id=env2.event_id,
+                event_type=env2.event_type,
+                timestamp=env2.timestamp,
+                source=source,
+                target=None,
+                correlation_id=correlation_id,
+                session_id=None,
+                payload=env2.payload,
+            )
+        except ValidationError:
+            # fall back to legacy
+            env1 = EnvelopeV1.model_validate(body)
+            return NormalizedEnvelope(
+                event_id=env1.id,
+                event_type=env1.event_type,
+                timestamp=env1.ts,
+                source=env1.source,
+                target=env1.target,
+                correlation_id=env1.correlation_id,
+                session_id=env1.session_id,
+                payload=env1.data,
+            )
+
+    async def _store_event(self, envelope: NormalizedEnvelope, routing_key: str) -> None:
         """Store event in database.
 
         Args:
-            envelope: Validated event envelope
+            envelope: Normalized event envelope
             routing_key: RabbitMQ routing key
         """
         storage_start = time.perf_counter()
 
         await self.database.store_event(
-            event_id=envelope.id,
+            event_id=envelope.event_id,
             event_type=envelope.event_type,
             source=envelope.source,
             target=envelope.target,
             routing_key=routing_key,
-            timestamp=envelope.ts,
-            payload=envelope.data,
+            timestamp=envelope.timestamp,
+            payload=envelope.payload,
             session_id=envelope.session_id,
             correlation_id=envelope.correlation_id,
             storage_latency_ms=(time.perf_counter() - storage_start) * 1000,
