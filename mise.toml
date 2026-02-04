@@ -1,2 +1,7 @@
 [env]
 _.file = [".env"]
+
+[tasks.start]
+description = "Start the Candystore Server"
+run = "uv run candystore serve"
+alias = "start"
