@@ -26,7 +26,7 @@
 **Implementation Details**:
 - Consumer in `src/candystore/consumer.py`
 - Uses `aio-pika` for async RabbitMQ connection
-- Wildcard subscription: `#` binding to `events` exchange
+- Wildcard subscription: `#` binding to `bloodbank.events.v1` exchange
 - Automatic reconnection with exponential backoff
 - Durable queue survives broker restarts
 - Event acknowledgment only after successful database commit
@@ -302,7 +302,7 @@ BATCH_SIZE=50       # Future optimization
 ## Integration Points
 
 ### Bloodbank Integration
-- Subscribes to exchange: `events`
+- Subscribes to exchange: `bloodbank.events.v1`
 - Binding key: `#` (all events)
 - Queue name: `candystore.storage`
 - Durable queue: Yes

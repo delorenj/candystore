@@ -7,7 +7,7 @@ This checklist verifies that STORY-006 and STORY-007 acceptance criteria are met
 ### ✅ Subscription to All Events
 - [x] **File**: `src/candystore/consumer.py`
 - [x] **Implementation**: Line 112 - `await self.queue.bind(exchange, routing_key="#")`
-- [x] **Verification**: Wildcard `#` binding subscribes to all events on `events` exchange
+- [x] **Verification**: Wildcard `#` binding subscribes to all events on `bloodbank.events.v1` exchange
 
 ### ✅ Database Schema
 - [x] **File**: `src/candystore/models.py`

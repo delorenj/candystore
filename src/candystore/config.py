@@ -15,7 +15,7 @@ class Settings(BaseSettings):
 
     # RabbitMQ (Bloodbank) Configuration
     rabbit_url: str = "amqp://guest:guest@localhost:5672/"
-    exchange_name: str = "events"
+    exchange_name: str = "bloodbank.events.v1"
     queue_name: str = "candystore.storage"
 
     # Database Configuration
