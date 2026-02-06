@@ -31,7 +31,7 @@ graph TB
         subgraph "Producers"
             WLK[WhisperLiveKit]
             IMI[iMi]
-            TT[TalkyTonny]
+            TT[HeyMa]
             AGENTS[Agent Services]
         end
 
