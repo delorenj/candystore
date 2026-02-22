@@ -10,9 +10,49 @@
 
 ## Product Overview
 
-Candystore is the **event persistence layer** for the 33GOD ecosystem. It serves as the "memory" of the system, capturing every event that flows through Bloodbank and making it available for audit trails, debugging, analytics, and event replay.
+Candystore is the **event persistence layer** for the 33GOD ecosystem. It serves as the **"memory"** of the system, capturing every event that flows through Bloodbank and making it available for audit trails, debugging, analytics, and event replay.
 
 Think of Candystore as a high-performance event recorder that sits alongside Bloodbank, silently capturing the complete history of the system. While Bloodbank is ephemeral (events are consumed and forgotten), Candystore ensures nothing is ever lost.
+
+**Candystore's Role in the Event Flow:**
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      CANDYSTORE IN EVENT FLOW                                │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   HOLYFIELDS → BLOODBANK → CANDYSTORE → HOLOCENE → AGENTS                   │
+│   (Definition)  (Transport)  (YOU ARE HERE)  (Visibility)  (Action)         │
+│                                │                                             │
+│                                ▼                                             │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │                    PERMANENT EVENT STORAGE                           │   │
+│   │                                                                      │   │
+│   │   PostgreSQL Table: events                                           │   │
+│   │   ┌─────────────┬─────────────┬─────────────┬─────────────┐          │   │
+│   │   │  id (PK)    │ event_type  │   source    │  timestamp  │          │   │
+│   │   ├─────────────┼─────────────┼─────────────┼─────────────┤          │   │
+│   │   │ payload     │ routing_key │ stored_at   │ session_id  │          │   │
+│   │   ├─────────────┼─────────────┼─────────────┼─────────────┤          │   │
+│   │   │ correlation │ latency_ms  │   [JSONB]   │             │          │   │
+│   │   └─────────────┴─────────────┴─────────────┴─────────────┘          │   │
+│   │                                                                      │   │
+│   │   Indexes:                                                           │   │
+│   │   • idx_session_timestamp (session_id, timestamp)                   │   │
+│   │   • idx_event_type_timestamp (event_type, timestamp)                │   │
+│   │   • idx_source_timestamp (source, timestamp)                        │   │
+│   │                                                                      │   │
+│   └─────────────────────────────────────────────────────────────────────┘   │
+│                                │                                             │
+│              ┌─────────────────┼─────────────────┐                          │
+│              ▼                 ▼                 ▼                          │
+│   ┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐              │
+│   │  Query API      │ │  Analytics      │ │  Event Replay   │              │
+│   │  GET /events    │ │  Aggregation    │ │  Audit Trail    │              │
+│   └─────────────────┘ └─────────────────┘ └─────────────────┘              │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
 
 **Key Capabilities:**
 - **Universal Event Capture**: Subscribes to all events via wildcard binding (`#`) for complete system visibility
@@ -25,50 +65,56 @@ Think of Candystore as a high-performance event recorder that sits alongside Blo
 
 ## Architecture Position
 
-```mermaid
-graph TB
-    subgraph "33GOD Event Pipeline"
-        subgraph "Producers"
-            WLK[WhisperLiveKit]
-            IMI[iMi]
-            TT[TalkyTonny]
-            AGENTS[Agent Services]
-        end
+Candystore operates as the **persistence layer** in the 33GOD event pipeline:
 
-        subgraph "Infrastructure Domain"
-            BB[Bloodbank<br/>RabbitMQ]
-            HF[Holyfields<br/>Schema Registry]
-        end
+```
+Holyfields (Definition) → Bloodbank (Transport) → Candystore (Persistence) → Holocene (Visibility) → Agents (Action)
+```
 
-        subgraph "Persistence & Visualization"
-            CS[Candystore<br/>Event Store]
-            CB[Candybar<br/>Dashboard]
-        end
+### Event Flow Detail
 
-        subgraph "Consumers"
-            TONNY[Tonny<br/>AI Agent]
-            HOLOCENE[Holocene<br/>Mission Control]
-        end
-    end
-
-    WLK -->|transcription.voice.completed| BB
-    IMI -->|worktree.created| BB
-    TT -->|voice.command.received| BB
-    AGENTS -->|agent.task.*| BB
-
-    HF -->|validates schemas| BB
-
-    BB -->|#<br/>all events| CS
-    BB -->|#<br/>all events| CB
-
-    CS -->|GET /events| TONNY
-    CS -->|GET /events| HOLOCENE
-    CS -->|GET /events| CB
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         CANDYSTORE EVENT FLOW                                │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   PRODUCERS                    BLOODBANK                    CANDYSTORE      │
+│   ┌─────────┐              ┌──────────────┐              ┌──────────────┐   │
+│   │ Whisper │──transcript──→│  RabbitMQ    │──wildcard──→│  PostgreSQL  │   │
+│   │ LiveKit │   .voice.     │  Exchange    │  (#) bind    │  Event Store │   │
+│   └─────────┘   completed   │              │              └──────────────┘   │
+│                             │ bloodbank.   │                     │          │
+│   ┌─────────┐              │ events.v1    │              ┌──────┴──────┐   │
+│   │  iMi    │──worktree.──→│  (TOPIC)     │              │  Query API  │   │
+│   │         │   created    │              │              │  :8683      │   │
+│   └─────────┘              └──────────────┘              └──────┬──────┘   │
+│                             │  │  │  │                          │          │
+│   ┌─────────┐              │  │  │  └──────agent.*─────┐        │          │
+│   │ Agents  │──agent.task.→│  │  └──────system.*──────┤        │          │
+│   └─────────┘   *          │  └─────────webhook.*──────┤        │          │
+│                             │                           │        │          │
+│   ┌─────────┐              │  ┌───────────┐            │        │          │
+│   │  HeyMa  │──voice.─────→│  │ WS Relay  │            │        │          │
+│   └─────────┘   command    │  │  :8683    │            │        │          │
+│                             │  └───────────┘            │        │          │
+│                             │       │                   │        │          │
+│                             │       ▼                   │        ▼          │
+│                             │  HOLOCENE                 │  CONSUMERS        │
+│                             │  (Real-time)              │  (Historical)     │
+│                             │                           │                   │
+│                             │                           │  • Holocene       │
+│                             │                           │  • Tonny          │
+│                             │                           │  • Candybar       │
+│                             │                           │  • Analytics      │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Role in Pipeline**: Candystore operates as a **passive observer** in the event pipeline. It subscribes to all events using a wildcard binding but does not participate in event routing or transformation. Its primary role is to persist events and provide query capabilities for downstream consumers that need historical data.
 
 **Relationship with Bloodbank**: While Bloodbank is the real-time nervous system, Candystore is the long-term memory. Components that need real-time updates subscribe directly to Bloodbank; components that need historical context query Candystore.
+
+**Relationship with Holocene**: Holocene queries Candystore for historical events on load, then subscribes to Bloodbank's WS relay for real-time updates. This hybrid approach provides both complete history and live updates.
 
 ---
 
