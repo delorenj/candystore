@@ -47,13 +47,14 @@ class Database:
 
     async def store_event(
         self,
-        event_id: str,
         event_type: str,
         source: str,
         target: str | None,
         routing_key: str,
         timestamp: datetime,
         payload: dict[str, Any],
+        event_id: str | None = None,
+        id: str | None = None,
         session_id: str | None = None,
         correlation_id: str | None = None,
         storage_latency_ms: float | None = None,
@@ -61,13 +62,14 @@ class Database:
         """Store a single event in the database.
 
         Args:
-            event_id: Unique event ID (UUID)
             event_type: Event type/category
             source: Event source service
             target: Event target service (optional)
             routing_key: RabbitMQ routing key
             timestamp: Event timestamp
             payload: Full event payload
+            event_id: Unique event ID (UUID, preferred)
+            id: Legacy alias for event_id (backward-compat)
             session_id: Session ID for tracing (optional)
             correlation_id: Correlation ID for tracing (optional)
             storage_latency_ms: Time taken to store event (optional)
@@ -75,6 +77,10 @@ class Database:
         Returns:
             Created StoredEvent instance
         """
+        resolved_event_id = event_id or id
+        if not resolved_event_id:
+            raise ValueError("store_event requires event_id (or legacy id)")
+
         # Normalize timestamps to UTC + tz-aware to match TIMESTAMPTZ columns
         if timestamp.tzinfo is None:
             timestamp = timestamp.replace(tzinfo=timezone.utc)
@@ -83,7 +89,7 @@ class Database:
 
         async with self.session_factory() as session:
             stored_event = StoredEvent(
-                id=event_id,
+                id=resolved_event_id,
                 event_type=event_type,
                 source=source,
                 target=target,
