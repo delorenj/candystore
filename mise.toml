@@ -1,7 +1,46 @@
+# Candystore — mise.toml
+#
+# Local-dev tasks plus the compose-stack lifecycle.
+
 [env]
 _.file = [".env"]
+COMPOSE_FILE = "compose/docker-compose.yml"
+COMPOSE_PROJECT = "candystore"
 
-[tasks.start]
-description = "Start the Candystore Server"
+[tasks.serve]
+description = "Run the Dapr subscriber + query API locally (no Docker)"
 run = "uv run candystore serve"
 alias = "start"
+
+[tasks."db:init"]
+description = "Create the database schema via SQLAlchemy create_all"
+run = "uv run candystore init-db"
+
+[tasks.up]
+description = "Boot the candystore stack (postgres + candystore + daprd)"
+run = "docker compose --project-name $COMPOSE_PROJECT -f $COMPOSE_FILE up -d --build"
+
+[tasks.down]
+description = "Tear the candystore stack down (volumes preserved)"
+run = "docker compose --project-name $COMPOSE_PROJECT -f $COMPOSE_FILE down"
+
+[tasks."down:wipe"]
+description = "Tear down AND remove postgres volume (data loss!)"
+run = "docker compose --project-name $COMPOSE_PROJECT -f $COMPOSE_FILE down -v"
+
+[tasks.logs]
+description = "Tail logs for all candystore services"
+run = "docker compose --project-name $COMPOSE_PROJECT -f $COMPOSE_FILE logs -f"
+raw = true
+
+[tasks.ps]
+description = "Show running candystore services"
+run = "docker compose --project-name $COMPOSE_PROJECT -f $COMPOSE_FILE ps"
+
+[tasks.test]
+description = "Run candystore tests"
+run = "uv run pytest tests/ --cov=candystore --cov-report=term-missing"
+
+[tasks.lint]
+description = "Lint candystore source"
+run = "uv run ruff check src/ tests/"

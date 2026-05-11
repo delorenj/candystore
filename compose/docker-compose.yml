@@ -1,0 +1,102 @@
+# Candystore — durable Claude-event store
+#
+# Three services:
+#   - postgres:        durable storage for CloudEvents envelopes
+#   - candystore:      FastAPI Dapr subscriber + query API (port 8683)
+#   - daprd-candystore: Dapr sidecar that subscribes to bloodbank-pubsub
+#                       and POSTs envelopes to candystore:/events/claude
+#
+# Networking:
+#   Candystore joins the external `bloodbank-network` so daprd-candystore
+#   can resolve the NATS broker and the placement service that live in
+#   bloodbank's compose stack. Bring bloodbank up first (claude-events
+#   profile), then bring this stack up.
+
+name: candystore
+
+networks:
+  candystore-internal:
+    name: candystore-internal
+    driver: bridge
+  bloodbank-network:
+    name: bloodbank-network
+    external: true
+
+volumes:
+  candystore-postgres-data:
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: candystore-postgres
+    environment:
+      POSTGRES_USER: "${CANDYSTORE_DB_USER:-candystore}"
+      POSTGRES_PASSWORD: "${CANDYSTORE_DB_PASSWORD:-candystore}"
+      POSTGRES_DB: "${CANDYSTORE_DB_NAME:-candystore}"
+    ports:
+      - "${CANDYSTORE_POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - candystore-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${CANDYSTORE_DB_USER:-candystore} -d ${CANDYSTORE_DB_NAME:-candystore}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks:
+      - candystore-internal
+    restart: unless-stopped
+
+  candystore:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: candystore
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://${CANDYSTORE_DB_USER:-candystore}:${CANDYSTORE_DB_PASSWORD:-candystore}@postgres:5432/${CANDYSTORE_DB_NAME:-candystore}"
+      APP_HOST: "0.0.0.0"
+      APP_PORT: "8683"
+      PUBSUB_NAME: "${CANDYSTORE_PUBSUB:-bloodbank-pubsub}"
+      LOG_LEVEL: "${CANDYSTORE_LOG_LEVEL:-INFO}"
+      LOG_FORMAT: "${CANDYSTORE_LOG_FORMAT:-json}"
+    ports:
+      - "${CANDYSTORE_APP_PORT:-8683}:8683"
+      - "${CANDYSTORE_METRICS_PORT:-9091}:9090"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - candystore-internal
+      - bloodbank-network
+    restart: unless-stopped
+
+  daprd-candystore:
+    image: daprio/daprd:1.13.0
+    container_name: candystore-daprd
+    command:
+      - "./daprd"
+      - "--app-id=candystore"
+      - "--dapr-http-port=3500"
+      - "--dapr-grpc-port=50001"
+      - "--app-port=8683"
+      - "--app-channel-address=candystore"
+      - "--app-protocol=http"
+      - "--resources-path=/components"
+      - "--placement-host-address=dapr-placement:50005"
+      - "--log-level=info"
+    volumes:
+      # Mount bloodbank's component manifests so the same bloodbank-pubsub
+      # component is loaded here. This couples the two repos at the
+      # filesystem level; acceptable for the local sandbox.
+      - ${BLOODBANK_COMPONENTS_PATH:-../../bloodbank/compose/components}:/components:ro
+    depends_on:
+      candystore:
+        condition: service_started
+    networks:
+      - candystore-internal
+      - bloodbank-network
+    ports:
+      - "${CANDYSTORE_DAPR_HTTP_PORT:-3504}:3500"
+    # No container-level healthcheck; daprd is distroless. Liveness is
+    # verified externally via curl :${CANDYSTORE_DAPR_HTTP_PORT}/v1.0/healthz.
+    restart: unless-stopped

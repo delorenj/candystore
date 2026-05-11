@@ -1,4 +1,9 @@
-"""Configuration management for Candystore."""
+"""Configuration management for Candystore.
+
+Dapr-pull model: Candystore advertises subscriptions via GET /dapr/subscribe;
+Dapr POSTs CloudEvents envelopes to the configured route. No broker client
+lives in this process.
+"""
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -13,15 +18,36 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # RabbitMQ (Bloodbank) Configuration
-    rabbit_url: str = "amqp://guest:guest@localhost:5672/"
-    exchange_name: str = "bloodbank.events.v1"
-    queue_name: str = "candystore.storage"
+    # Database — Postgres in prod; SQLite is allowed for local dev only.
+    database_url: str = "postgresql+asyncpg://candystore:candystore@localhost:5432/candystore"
 
-    # Database Configuration
-    database_url: str = "sqlite+aiosqlite:///./candystore.db"
+    # Application HTTP server. Dapr sidecar talks to this via --app-port.
+    app_host: str = "0.0.0.0"
+    app_port: int = 8683
 
-    # API Configuration
+    # Dapr pub/sub component name (declared in bloodbank/compose/components/pubsub.yaml).
+    pubsub_name: str = "bloodbank-pubsub"
+
+    # Comma-separated list of CloudEvents `type` values to subscribe to.
+    # Default covers the full Claude Code agent.* surface; producers in
+    # 33GOD/.claude/hooks/bloodbank-publisher.sh emit these.
+    subscribe_topics: str = (
+        "event.agent.tool.invoked,"
+        "event.agent.tool.requested,"
+        "event.agent.session.started,"
+        "event.agent.session.ended,"
+        "event.agent.prompt.submitted,"
+        "event.agent.subagent.completed"
+    )
+
+    # Dead-letter topic (Dapr can route undeliverable messages here).
+    # Empty disables DLQ wiring at the subscription level.
+    dead_letter_topic: str = ""
+
+    # Route the application advertises to Dapr.
+    subscribe_route: str = "/events/claude"
+
+    # Legacy compatibility for query API — kept aliased.
     api_host: str = "0.0.0.0"
     api_port: int = 8683
 
@@ -33,9 +59,9 @@ class Settings(BaseSettings):
     metrics_enabled: bool = True
     metrics_port: int = 9090
 
-    # Consumer Configuration
-    prefetch_count: int = 100  # How many events to prefetch from RabbitMQ
-    batch_size: int = 50  # Batch size for database inserts
+    @property
+    def topics(self) -> list[str]:
+        return [t.strip() for t in self.subscribe_topics.split(",") if t.strip()]
 
 
 settings = Settings()

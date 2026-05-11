@@ -1,4 +1,8 @@
-"""CLI for Candystore service."""
+"""Candystore CLI — Typer entry point for the FastAPI service.
+
+`candystore serve` boots the Dapr subscriber + query API. No broker client
+runs in this process; Dapr is the only ingress.
+"""
 
 import asyncio
 
@@ -7,12 +11,11 @@ import uvicorn
 
 from candystore.api import create_app
 from candystore.config import settings
-from candystore.consumer import EventConsumer
 from candystore.database import Database
 from candystore.logging_config import configure_logging, get_logger
 from candystore.metrics import start_metrics_server
 
-app = typer.Typer(help="Candystore - Event storage and query service")
+app = typer.Typer(help="Candystore — Dapr subscriber + event store for 33GOD.")
 
 configure_logging()
 logger = get_logger(__name__)
@@ -20,71 +23,44 @@ logger = get_logger(__name__)
 
 @app.command()
 def serve(
-    host: str = typer.Option(settings.api_host, help="API host"),
-    port: int = typer.Option(settings.api_port, help="API port"),
+    host: str = typer.Option(settings.app_host, help="HTTP bind host"),
+    port: int = typer.Option(settings.app_port, help="HTTP bind port (also Dapr --app-port)"),
     reload: bool = typer.Option(False, help="Enable auto-reload (development)"),
 ) -> None:
-    """Start the Candystore service (consumer + API).
-
-    This starts both the event consumer and the REST API server.
-    """
+    """Boot the Candystore HTTP server (Dapr subscriber + query API)."""
     logger.info(
         "candystore_starting",
         host=host,
         port=port,
         database=settings.database_url,
-        rabbit_url=settings.rabbit_url,
+        pubsub=settings.pubsub_name,
+        topics=settings.topics,
     )
 
-    # Initialize database
     database = Database()
-
-    # Start metrics server
     start_metrics_server()
 
-    # Create FastAPI app
     fastapi_app = create_app(database)
 
-    # Start consumer in background
-    async def start_consumer() -> None:
-        await database.init_db()
-        consumer = EventConsumer(database)
-        await consumer.start()
-
     @fastapi_app.on_event("startup")
-    async def startup_event() -> None:
-        """Run on application startup."""
-        logger.info("api_starting")
+    async def _startup() -> None:
         await database.init_db()
-        consumer = EventConsumer(database)
-        # Start consumer as background task
-        asyncio.create_task(consumer.start())
+        logger.info("candystore_ready", port=port)
 
     @fastapi_app.on_event("shutdown")
-    async def shutdown_event() -> None:
-        """Run on application shutdown."""
-        logger.info("api_stopping")
+    async def _shutdown() -> None:
         await database.close()
+        logger.info("candystore_stopped")
 
-    # Run uvicorn server
-    uvicorn.run(
-        fastapi_app,
-        host=host,
-        port=port,
-        reload=reload,
-        log_config=None,  # Use our own logging
-    )
+    uvicorn.run(fastapi_app, host=host, port=port, reload=reload, log_config=None)
 
 
 @app.command()
 def init_db() -> None:
-    """Initialize the database (create tables)."""
+    """Create the database schema."""
     logger.info("initializing_database")
-
     database = Database()
-
     asyncio.run(database.init_db())
-
     logger.info("database_initialized")
 
 
