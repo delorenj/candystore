@@ -1,26 +1,15 @@
 [env]
 _.file = [".env"]
 
-[tasks.install]
-description = "Install Python dependencies"
-run = "pip install -e '.[dev]'"
-
 [tasks.start]
-description = "Start candystore API + ingestion server"
-run = "python -m candystore.main"
+description = "Start the Candystore Server"
+run = "uv run candystore serve"
+alias = "start"
 
 [tasks.test]
 description = "Run pytest suite"
-run = "pytest tests/ -v"
-
-[tasks."test:schema"]
-description = "Validate DB migrations on ephemeral Postgres"
-run = "bash tests/migration_test.sh"
+run = "uv run pytest tests/"
 
 [tasks.lint]
-description = "Run ruff"
-run = "ruff check candystore/ tests/"
-
-[tasks."build:ui"]
-description = "Build React SPA into static/"
-run = "cd web && npm run build"
+description = "Run ruff against src-layout package and tests"
+run = "uv run ruff check src/candystore tests"

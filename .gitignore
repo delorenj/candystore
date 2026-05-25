@@ -45,7 +45,6 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 web/dist/
-static/
 
 # Build artifacts
 *.tar.gz
