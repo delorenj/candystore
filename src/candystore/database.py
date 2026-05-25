@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from candystore.config import settings
@@ -36,6 +37,15 @@ class Database:
             await conn.run_sync(Base.metadata.create_all)
         logger.info("database_initialized", tables=list(Base.metadata.tables.keys()))
 
+    async def init_schema(self) -> None:
+        """Initialize the configured database schema.
+
+        Task CANPM-T2 uses the name ``init_schema``; keep ``init_db`` as the
+        historical API and route both through SQLAlchemy metadata so tests can
+        run on SQLite while production can target PostgreSQL.
+        """
+        await self.init_db()
+
     async def close(self) -> None:
         """Close database connections."""
         await self.engine.dispose()
@@ -44,6 +54,30 @@ class Database:
     async def get_session(self) -> AsyncSession:
         """Get a new database session."""
         return self.session_factory()
+
+    @staticmethod
+    def _normalize_timestamp(timestamp: datetime) -> datetime:
+        """Normalize timestamps to UTC + tz-aware to match TIMESTAMPTZ columns."""
+        if timestamp.tzinfo is None:
+            return timestamp.replace(tzinfo=UTC)
+        return timestamp.astimezone(UTC)
+
+    @staticmethod
+    def _derive_domain(event_type: str) -> str:
+        """Best-effort domain extraction from Bloodbank event types."""
+        parts = event_type.split(".")
+        if len(parts) >= 4 and parts[0] == "bloodbank":
+            return parts[3]
+        return parts[0] if parts else "unknown"
+
+    @staticmethod
+    def _derive_service(source: str) -> str:
+        """Best-effort service extraction from a source string."""
+        if "@" in source:
+            return source.split("@", 1)[0] or "unknown"
+        if source.startswith("urn:"):
+            return source.rsplit(":", 1)[-1] or "unknown"
+        return source or "unknown"
 
     async def store_event(
         self,
@@ -89,14 +123,36 @@ class Database:
             raise ValueError("store_event requires event_id (or legacy id)")
 
         # Normalize timestamps to UTC + tz-aware to match TIMESTAMPTZ columns
-        if timestamp.tzinfo is None:
-            timestamp = timestamp.replace(tzinfo=UTC)
-        else:
-            timestamp = timestamp.astimezone(UTC)
+        timestamp = self._normalize_timestamp(timestamp)
+
+        service = self._derive_service(source)
+        domain = self._derive_domain(event_type)
+        raw_payload = {
+            "id": resolved_event_id,
+            "specversion": "1.0",
+            "source": source,
+            "type": event_type,
+            "time": timestamp.isoformat(),
+            "producer": service,
+            "service": service,
+            "domain": domain,
+            "kind": "event",
+            "data": payload,
+        }
 
         async with self.session_factory() as session:
             stored_event = StoredEvent(
                 id=resolved_event_id,
+                specversion="1.0",
+                ce_type=event_type,
+                time=timestamp,
+                correlationid=correlation_id,
+                producer=service,
+                service=service,
+                domain=domain,
+                kind="event",
+                data=payload,
+                raw=raw_payload,
                 event_type=event_type,
                 source=source,
                 target=target,
@@ -111,6 +167,94 @@ class Database:
             await session.commit()
             await session.refresh(stored_event)
             return stored_event
+
+    @staticmethod
+    def _parse_event_time(value: Any) -> datetime:
+        """Parse a CloudEvents time value into a timezone-aware datetime."""
+        if isinstance(value, datetime):
+            return Database._normalize_timestamp(value)
+        if isinstance(value, str):
+            normalized = value.replace("Z", "+00:00")
+            return Database._normalize_timestamp(datetime.fromisoformat(normalized))
+        raise ValueError("CloudEvent requires a valid time value")
+
+    async def insert_event(self, envelope: dict[str, Any]) -> bool:
+        """Insert a Bloodbank v1 CloudEvent envelope idempotently.
+
+        Returns True when a new row is inserted and False when the event ID is
+        already present. The CloudEvents fields are stored verbatim alongside
+        legacy columns used by the existing API.
+        """
+        event_id = envelope.get("id")
+        event_type = envelope.get("type")
+        source = envelope.get("source")
+        event_time = self._parse_event_time(envelope.get("time"))
+        producer = envelope.get("producer")
+        service = envelope.get("service")
+        domain = envelope.get("domain")
+        kind = envelope.get("kind")
+
+        required = {
+            "id": event_id,
+            "source": source,
+            "type": event_type,
+            "time": event_time,
+            "producer": producer,
+            "service": service,
+            "domain": domain,
+            "kind": kind,
+        }
+        missing = [name for name, value in required.items() if value in (None, "")]
+        if missing:
+            raise ValueError(f"CloudEvent missing required field(s): {', '.join(missing)}")
+
+        raw = dict(envelope)
+        routing_key = str(envelope.get("ordering_key") or event_type)
+        data = envelope.get("data")
+        correlationid = envelope.get("correlationid")
+        session_id = data.get("session_id") if isinstance(data, dict) else None
+
+        stored_event = StoredEvent(
+            id=str(event_id),
+            specversion=str(envelope.get("specversion", "1.0")),
+            ce_type=str(event_type),
+            subject=envelope.get("subject"),
+            time=event_time,
+            datacontenttype=envelope.get("datacontenttype"),
+            dataschema=envelope.get("dataschema"),
+            correlationid=str(correlationid) if correlationid else None,
+            causationid=str(envelope.get("causationid")) if envelope.get("causationid") else None,
+            producer=str(producer),
+            service=str(service),
+            domain=str(domain),
+            schemaref=envelope.get("schemaref"),
+            traceparent=envelope.get("traceparent"),
+            kind=str(kind),
+            actor=envelope.get("actor"),
+            data=data,
+            ordering_key=envelope.get("ordering_key"),
+            raw=raw,
+            event_type=str(event_type),
+            source=str(source),
+            target=envelope.get("subject"),
+            routing_key=routing_key,
+            timestamp=event_time,
+            payload=data if isinstance(data, dict) else {},
+            session_id=str(session_id) if session_id else None,
+            correlation_id=str(correlationid) if correlationid else None,
+        )
+
+        async with self.session_factory() as session:
+            session.add(stored_event)
+            try:
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+                existing = await session.get(StoredEvent, str(event_id))
+                if existing is not None:
+                    return False
+                raise
+            return True
 
     async def query_events(
         self,
@@ -182,3 +326,26 @@ class Database:
             events = result.scalars().all()
 
             return list(events), total_count
+
+
+def _default_database() -> Database:
+    """Create a Database bound to current settings for module-level helpers."""
+    return Database()
+
+
+async def init_schema() -> None:
+    """Initialize schema using the default configured database."""
+    database = _default_database()
+    try:
+        await database.init_schema()
+    finally:
+        await database.close()
+
+
+async def insert_event(envelope: dict[str, Any]) -> bool:
+    """Insert a CloudEvent using the default configured database."""
+    database = _default_database()
+    try:
+        return await database.insert_event(envelope)
+    finally:
+        await database.close()

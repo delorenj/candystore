@@ -4,9 +4,77 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import inspect
 
 from candystore.database import Database
 from candystore.models import StoredEvent
+
+
+@pytest.mark.asyncio
+async def test_schema_has_cloudevents_columns(test_database: Database) -> None:
+    """Test the events table includes Bloodbank v1 CloudEvents columns."""
+    async with test_database.engine.begin() as conn:
+        columns = await conn.run_sync(
+            lambda sync_conn: {col["name"] for col in inspect(sync_conn).get_columns("events")}
+        )
+
+    assert {
+        "id",
+        "specversion",
+        "source",
+        "type",
+        "subject",
+        "time",
+        "datacontenttype",
+        "dataschema",
+        "correlationid",
+        "causationid",
+        "producer",
+        "service",
+        "domain",
+        "schemaref",
+        "traceparent",
+        "kind",
+        "actor",
+        "data",
+        "received_at",
+        "ordering_key",
+        "raw",
+    }.issubset(columns)
+
+
+@pytest.mark.asyncio
+async def test_insert_event_idempotent(test_database: Database) -> None:
+    """Test CloudEvents insert returns true once, then false for duplicate IDs."""
+    envelope = {
+        "id": str(uuid4()),
+        "specversion": "1.0",
+        "source": "urn:33god:test",
+        "type": "bloodbank.v1.cli.session.ended",
+        "time": "2026-05-24T16:00:00Z",
+        "datacontenttype": "application/json",
+        "producer": "test-producer",
+        "service": "test-service",
+        "domain": "cli",
+        "kind": "event",
+        "correlationid": str(uuid4()),
+        "causationid": str(uuid4()),
+        "actor": {"cli": "claude"},
+        "data": {"session_id": str(uuid4()), "status": "ok"},
+        "ordering_key": "cli-session",
+    }
+
+    assert await test_database.insert_event(envelope) is True
+    assert await test_database.insert_event(envelope) is False
+
+    events, total = await test_database.query_events(event_type=envelope["type"])
+    assert total == 1
+    stored = events[0]
+    assert stored.id == envelope["id"]
+    assert stored.ce_type == envelope["type"]
+    assert stored.specversion == "1.0"
+    assert stored.domain == "cli"
+    assert stored.raw == envelope
 
 
 @pytest.mark.asyncio
