@@ -2,7 +2,7 @@
 -- The CloudEvents columns are the canonical ingest/query shape. Legacy columns
 -- are retained so the existing FastAPI query surface remains backward-compatible.
 CREATE TABLE IF NOT EXISTS events (
-    id                  UUID PRIMARY KEY,
+    id                  TEXT PRIMARY KEY,
     specversion         TEXT NOT NULL DEFAULT '1.0',
     source              TEXT NOT NULL,
     type                TEXT NOT NULL,
@@ -10,19 +10,19 @@ CREATE TABLE IF NOT EXISTS events (
     time                TIMESTAMPTZ NOT NULL,
     datacontenttype     TEXT,
     dataschema          TEXT,
-    correlationid       UUID,
-    causationid         UUID,
+    correlationid       TEXT,
+    causationid         TEXT,
     producer            TEXT NOT NULL,
     service             TEXT NOT NULL,
     domain              TEXT NOT NULL,
     schemaref           TEXT,
     traceparent         TEXT,
     kind                TEXT NOT NULL,
-    actor               JSONB,
-    data                JSONB,
+    actor               JSON,
+    data                JSON,
     received_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     ordering_key        TEXT,
-    raw                 JSONB NOT NULL,
+    raw                 JSON NOT NULL,
 
     -- Backward-compatible fields used by the current API/tests.
     event_type          TEXT NOT NULL,
@@ -30,9 +30,9 @@ CREATE TABLE IF NOT EXISTS events (
     routing_key         TEXT NOT NULL,
     timestamp           TIMESTAMPTZ NOT NULL,
     stored_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    payload             JSONB NOT NULL,
-    session_id          UUID,
-    correlation_id      UUID,
+    payload             JSON NOT NULL,
+    session_id          TEXT,
+    correlation_id      TEXT,
     storage_latency_ms  DOUBLE PRECISION
 );
 
@@ -48,8 +48,6 @@ CREATE INDEX IF NOT EXISTS idx_events_domain_time ON events(domain, time DESC);
 CREATE INDEX IF NOT EXISTS idx_events_correlation_time ON events(correlationid, time);
 CREATE INDEX IF NOT EXISTS idx_events_time_domain ON events(time, domain);
 CREATE INDEX IF NOT EXISTS idx_events_time_actorcli ON events(time, (actor->>'cli'));
-CREATE INDEX IF NOT EXISTS idx_events_data_gin ON events USING GIN (data jsonb_path_ops);
-
 CREATE INDEX IF NOT EXISTS idx_events_event_type ON events(event_type);
 CREATE INDEX IF NOT EXISTS idx_events_source ON events(source);
 CREATE INDEX IF NOT EXISTS idx_events_target ON events(target);
