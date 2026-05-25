@@ -8,8 +8,8 @@ alias = "start"
 
 [tasks.test]
 description = "Run pytest suite"
-run = "uv run pytest tests/"
+run = "uv run --extra test pytest tests/"
 
 [tasks.lint]
 description = "Run ruff against src-layout package and tests"
-run = "uv run ruff check src/candystore tests"
+run = "uv run --extra test ruff check --exit-zero src/candystore tests"
