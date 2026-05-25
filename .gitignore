@@ -26,32 +26,49 @@ venv/
 ENV/
 env/
 
-# IDEs
+# Testing and coverage
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+
+# Type checkers and linters
+.mypy_cache/
+.ruff_cache/
+.pyre/
+
+# Node / UI
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+web/dist/
+static/
+
+# Build artifacts
+*.tar.gz
+*.zip
+
+# Database/runtime
+*.db
+*.db-journal
+candystore.db
+logs/
+*.log
+*.pid
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# IDEs / OS
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
-.tox/
-
-# Database
-*.db
-*.db-journal
-candystore.db
-
-# Logs
-*.log
-logs/
-
-# Environment
-.env
-.env.local
-
-# OS
 .DS_Store
 Thumbs.db
