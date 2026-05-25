@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///./candystore.db"
 
     # API Configuration
-    api_host: str = "0.0.0.0"
+    api_host: str = "0.0.0.0"  # noqa: S104 - intentional default server bind
     api_port: int = 8683
 
     # Logging Configuration

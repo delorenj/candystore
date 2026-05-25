@@ -3,8 +3,8 @@
 import asyncio
 import signal
 import sys
+from typing import Any
 
-from candystore.api import create_app
 from candystore.config import settings
 from candystore.consumer import EventConsumer
 from candystore.database import Database

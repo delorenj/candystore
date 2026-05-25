@@ -1,6 +1,6 @@
 """Tests for database operations."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -14,7 +14,7 @@ async def test_store_event(test_database: Database, sample_event_data: dict) -> 
     """Test storing a single event."""
     event = await test_database.store_event(**sample_event_data)
 
-    assert event.id == sample_event_data["id"]
+    assert event.id == sample_event_data["event_id"]
     assert event.event_type == sample_event_data["event_type"]
     assert event.source == sample_event_data["source"]
     assert event.target == sample_event_data["target"]
@@ -71,12 +71,12 @@ async def test_query_events_by_time_range(
 ) -> None:
     """Test querying events by time range."""
     # Store multiple events with different timestamps
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     await test_database.store_event(
         **{
             **sample_event_data,
-            "id": str(uuid4()),
+            "event_id": str(uuid4()),
             "timestamp": now - timedelta(hours=2),
         }
     )
@@ -84,7 +84,7 @@ async def test_query_events_by_time_range(
     await test_database.store_event(
         **{
             **sample_event_data,
-            "id": str(uuid4()),
+            "event_id": str(uuid4()),
             "timestamp": now - timedelta(hours=1),
         }
     )
@@ -92,7 +92,7 @@ async def test_query_events_by_time_range(
     await test_database.store_event(
         **{
             **sample_event_data,
-            "id": str(uuid4()),
+            "event_id": str(uuid4()),
             "timestamp": now,
         }
     )
@@ -110,11 +110,11 @@ async def test_query_events_by_time_range(
 async def test_query_events_pagination(test_database: Database, sample_event_data: dict) -> None:
     """Test pagination in event queries."""
     # Store multiple events
-    for i in range(10):
+    for _i in range(10):
         await test_database.store_event(
             **{
                 **sample_event_data,
-                "id": str(uuid4()),
+                "event_id": str(uuid4()),
             }
         )
 
@@ -144,7 +144,7 @@ async def test_query_events_combined_filters(
     await test_database.store_event(
         **{
             **sample_event_data,
-            "id": str(uuid4()),
+            "event_id": str(uuid4()),
             "event_type": event_type,
             "session_id": session_id,
         }
@@ -154,7 +154,7 @@ async def test_query_events_combined_filters(
     await test_database.store_event(
         **{
             **sample_event_data,
-            "id": str(uuid4()),
+            "event_id": str(uuid4()),
             "event_type": "other.type",
             "session_id": session_id,
         }

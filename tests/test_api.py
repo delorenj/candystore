@@ -1,6 +1,6 @@
 """Tests for REST API."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -59,12 +59,12 @@ async def test_query_events_with_filters(
 
     # Store test event
     await test_database.store_event(
-        id=str(uuid4()),
+        event_id=str(uuid4()),
         event_type=event_type,
         source="test-source",
         target=None,
         routing_key=event_type,
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime.now(UTC),
         payload={"test": "data"},
         session_id=session_id,
     )
@@ -90,12 +90,12 @@ async def test_query_events_pagination(
     # Store multiple events
     for i in range(15):
         await test_database.store_event(
-            id=str(uuid4()),
+            event_id=str(uuid4()),
             event_type=f"test.pagination.{i}",
             source="test-source",
             target=None,
             routing_key="test.pagination",
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             payload={"index": i},
         )
 

@@ -1,6 +1,6 @@
 """Database connection and operations."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -54,10 +54,11 @@ class Database:
         timestamp: datetime,
         payload: dict[str, Any],
         event_id: str | None = None,
-        id: str | None = None,
+        legacy_id: str | None = None,
         session_id: str | None = None,
         correlation_id: str | None = None,
         storage_latency_ms: float | None = None,
+        **legacy_kwargs: Any,
     ) -> StoredEvent:
         """Store a single event in the database.
 
@@ -69,23 +70,29 @@ class Database:
             timestamp: Event timestamp
             payload: Full event payload
             event_id: Unique event ID (UUID, preferred)
-            id: Legacy alias for event_id (backward-compat)
+            legacy_id: Legacy alias for event_id (backward-compat)
             session_id: Session ID for tracing (optional)
             correlation_id: Correlation ID for tracing (optional)
             storage_latency_ms: Time taken to store event (optional)
+            **legacy_kwargs: Legacy keyword aliases, including id
 
         Returns:
             Created StoredEvent instance
         """
-        resolved_event_id = event_id or id
+        legacy_id = legacy_id or legacy_kwargs.pop("id", None)
+        if legacy_kwargs:
+            unexpected = ", ".join(legacy_kwargs)
+            raise TypeError(f"Unexpected keyword argument(s): {unexpected}")
+
+        resolved_event_id = event_id or legacy_id
         if not resolved_event_id:
             raise ValueError("store_event requires event_id (or legacy id)")
 
         # Normalize timestamps to UTC + tz-aware to match TIMESTAMPTZ columns
         if timestamp.tzinfo is None:
-            timestamp = timestamp.replace(tzinfo=timezone.utc)
+            timestamp = timestamp.replace(tzinfo=UTC)
         else:
-            timestamp = timestamp.astimezone(timezone.utc)
+            timestamp = timestamp.astimezone(UTC)
 
         async with self.session_factory() as session:
             stored_event = StoredEvent(

@@ -1,8 +1,8 @@
 """Pytest configuration and fixtures."""
 
 import asyncio
-from datetime import datetime, timezone
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -46,12 +46,12 @@ async def test_database() -> AsyncGenerator[Database, None]:
 def sample_event_data() -> dict:
     """Create sample event data for testing."""
     return {
-        "id": str(uuid4()),
+        "event_id": str(uuid4()),
         "event_type": "test.event.created",
         "source": "test-service",
         "target": "target-service",
         "routing_key": "test.event.created",
-        "timestamp": datetime.now(timezone.utc),
+        "timestamp": datetime.now(UTC),
         "payload": {
             "message": "Test event",
             "count": 42,

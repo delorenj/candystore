@@ -12,4 +12,4 @@ run = "uv run --extra test pytest tests/"
 
 [tasks.lint]
 description = "Run ruff against src-layout package and tests"
-run = "uv run --extra test ruff check --exit-zero src/candystore tests"
+run = "uv run --extra test ruff check src/candystore tests"

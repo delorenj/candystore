@@ -2,16 +2,22 @@
 
 import time
 from datetime import datetime
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
+from sqlalchemy import select
 
 from candystore.config import settings
 from candystore.database import Database
 from candystore.logging_config import get_logger
-from candystore.metrics import api_request_duration_histogram, api_requests_total, query_results_total
+from candystore.metrics import (
+    api_request_duration_histogram,
+    api_requests_total,
+    query_results_total,
+)
+from candystore.models import StoredEvent
 
 logger = get_logger(__name__)
 
@@ -85,14 +91,20 @@ def create_app(database: Database) -> FastAPI:
 
     @app.get("/events", response_model=EventsResponse)
     async def query_events(
-        session_id: str | None = Query(None, description="Filter by session ID"),
-        event_type: str | None = Query(None, description="Filter by event type"),
-        source: str | None = Query(None, description="Filter by source service"),
-        target: str | None = Query(None, description="Filter by target service"),
-        start_time: datetime | None = Query(None, description="Filter by start time (ISO8601)"),
-        end_time: datetime | None = Query(None, description="Filter by end time (ISO8601)"),
-        limit: int = Query(100, ge=1, le=1000, description="Maximum number of results"),
-        offset: int = Query(0, ge=0, description="Offset for pagination"),
+        session_id: Annotated[str | None, Query(description="Filter by session ID")] = None,
+        event_type: Annotated[str | None, Query(description="Filter by event type")] = None,
+        source: Annotated[str | None, Query(description="Filter by source service")] = None,
+        target: Annotated[str | None, Query(description="Filter by target service")] = None,
+        start_time: Annotated[
+            datetime | None,
+            Query(description="Filter by start time (ISO8601)"),
+        ] = None,
+        end_time: Annotated[
+            datetime | None,
+            Query(description="Filter by end time (ISO8601)"),
+        ] = None,
+        limit: Annotated[int, Query(ge=1, le=1000, description="Maximum number of results")] = 100,
+        offset: Annotated[int, Query(ge=0, description="Offset for pagination")] = 0,
     ) -> EventsResponse:
         """Query stored events with filters and pagination.
 
@@ -144,7 +156,9 @@ def create_app(database: Database) -> FastAPI:
 
             # Track metrics
             duration = time.perf_counter() - start
-            api_request_duration_histogram.labels(method="GET", endpoint="/events").observe(duration)
+            api_request_duration_histogram.labels(method="GET", endpoint="/events").observe(
+                duration
+            )
             api_requests_total.labels(method="GET", endpoint="/events", status="200").inc()
             query_results_total.inc(len(event_responses))
 
@@ -180,7 +194,7 @@ def create_app(database: Database) -> FastAPI:
                 error=str(e),
                 error_type=type(e).__name__,
             )
-            raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}") from e
 
     @app.get("/events/{event_id}", response_model=EventResponse)
     async def get_event_by_id(event_id: str) -> EventResponse:
@@ -198,23 +212,22 @@ def create_app(database: Database) -> FastAPI:
             events, total = await database.query_events(limit=1, offset=0)
 
             # Find event by ID (simplified - in production would add direct ID lookup)
-            # For now, we use a filter query
-            from sqlalchemy import select
-
-            from candystore.models import StoredEvent
-
             async with database.session_factory() as session:
-                result = await session.execute(select(StoredEvent).where(StoredEvent.id == event_id))
+                result = await session.execute(
+                    select(StoredEvent).where(StoredEvent.id == event_id)
+                )
                 event = result.scalar_one_or_none()
 
                 if not event:
-                    api_requests_total.labels(method="GET", endpoint="/events/{id}", status="404").inc()
+                    api_requests_total.labels(
+                        method="GET", endpoint="/events/{id}", status="404"
+                    ).inc()
                     raise HTTPException(status_code=404, detail=f"Event {event_id} not found")
 
                 duration = time.perf_counter() - start
-                api_request_duration_histogram.labels(method="GET", endpoint="/events/{id}").observe(
-                    duration
-                )
+                api_request_duration_histogram.labels(
+                    method="GET", endpoint="/events/{id}"
+                ).observe(duration)
                 api_requests_total.labels(method="GET", endpoint="/events/{id}", status="200").inc()
 
                 logger.info(
@@ -247,6 +260,8 @@ def create_app(database: Database) -> FastAPI:
                 error=str(e),
                 error_type=type(e).__name__,
             )
-            raise HTTPException(status_code=500, detail=f"Event retrieval failed: {str(e)}")
+            raise HTTPException(
+                status_code=500, detail=f"Event retrieval failed: {str(e)}"
+            ) from e
 
     return app

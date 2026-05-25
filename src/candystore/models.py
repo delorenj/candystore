@@ -1,6 +1,6 @@
 """Database models for event storage."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import JSON, DateTime, Index, String
@@ -36,7 +36,7 @@ class StoredEvent(Base):
     stored_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
         index=True,
     )
 
