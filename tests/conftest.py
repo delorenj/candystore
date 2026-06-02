@@ -1,70 +1,68 @@
-"""Pytest configuration and fixtures."""
+from __future__ import annotations
 
-import asyncio
-from datetime import datetime, timezone
-from typing import AsyncGenerator
-from uuid import uuid4
+import copy
+import os
+import uuid
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-
-from candystore.database import Database
-from candystore.models import Base, StoredEvent
-
-
-@pytest.fixture(scope="session")
-def event_loop():
-    """Create event loop for async tests."""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
 
 
 @pytest.fixture
-async def test_database() -> AsyncGenerator[Database, None]:
-    """Create test database with in-memory SQLite."""
-    # Use in-memory SQLite for tests
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+def db(monkeypatch: pytest.MonkeyPatch):
+    url = os.environ.get("CANDYSTORE_TEST_DATABASE_URL") or os.environ.get("DATABASE_URL")
+    if not url:
+        pytest.skip("set CANDYSTORE_TEST_DATABASE_URL or DATABASE_URL for Postgres-backed tests")
+    monkeypatch.setenv("DATABASE_URL", url)
 
-    # Create tables
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    from candystore.db import cursor, init_schema
 
-    # Create database instance
-    db = Database()
-    db.engine = engine
-    db.session_factory = session_factory
+    try:
+        init_schema()
+        with cursor() as cur:
+            cur.execute("TRUNCATE events")
+    except Exception as exc:
+        pytest.skip(f"Postgres unavailable for candystore tests: {exc}")
 
-    yield db
+    yield
 
-    # Cleanup
-    await engine.dispose()
-
-
-@pytest.fixture
-def sample_event_data() -> dict:
-    """Create sample event data for testing."""
-    return {
-        "id": str(uuid4()),
-        "event_type": "test.event.created",
-        "source": "test-service",
-        "target": "target-service",
-        "routing_key": "test.event.created",
-        "timestamp": datetime.now(timezone.utc),
-        "payload": {
-            "message": "Test event",
-            "count": 42,
-            "nested": {"key": "value"},
-        },
-        "session_id": str(uuid4()),
-        "correlation_id": str(uuid4()),
-        "storage_latency_ms": 5.0,
-    }
+    with cursor() as cur:
+        cur.execute("TRUNCATE events")
 
 
 @pytest.fixture
-async def stored_event(test_database: Database, sample_event_data: dict) -> StoredEvent:
-    """Create and store a sample event."""
-    event = await test_database.store_event(**sample_event_data)
-    return event
+def sample_event():
+    def make_event(**overrides):
+        event_id = overrides.pop("id", str(uuid.uuid4()))
+        correlationid = overrides.pop("correlationid", str(uuid.uuid4()))
+        data = {
+            "session_id": correlationid,
+            "project": "candystore",
+            "working_directory": "/home/delorenj/code/33GOD/candystore",
+            "git_branch": "main",
+            "duration_seconds": 95,
+            "total_turns": 3,
+            "tools_used": ["apply_patch", "pytest"],
+            "final_status": "success",
+        }
+        data.update(overrides.pop("data", {}))
+        actor = {"cli": "claude", "provider": "anthropic"}
+        actor.update(overrides.pop("actor", {}))
+        env = {
+            "id": event_id,
+            "specversion": "1.0",
+            "source": "urn:33god:test",
+            "type": "bloodbank.v1.cli.session.ended",
+            "time": "2026-05-24T16:00:00Z",
+            "producer": "test-producer",
+            "service": "test-service",
+            "domain": "cli",
+            "kind": "event",
+            "correlationid": correlationid,
+            "causationid": str(uuid.uuid4()),
+            "actor": actor,
+            "data": data,
+        }
+        env.update(overrides)
+        return copy.deepcopy(env)
+
+    return make_event

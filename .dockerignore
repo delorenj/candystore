@@ -1,0 +1,12 @@
+.git/
+.worktrees/
+.venv/
+.pytest_cache/
+.ruff_cache/
+htmlcov/
+web/node_modules/
+web/dist/
+tests/
+PLAN.md
+agents/
+*.log

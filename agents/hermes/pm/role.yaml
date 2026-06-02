@@ -1,0 +1,50 @@
+# Hermes agent role manifest.  Tracked in the PROJECT repository.
+# The agent's actual state (memory, sessions, evolving SOUL) lives in the
+# runtime submodule.  This file is the immutable contract for this role.
+
+repo: candystore
+role: pm
+agent_id: candystore-pm
+display_name: "Candystore PM"
+purpose: "pm agent for candystore"
+
+# Inference target (empty = inherit from global ~/.hermes/config.yaml)
+model:
+  provider: ""
+  name: ""
+
+# Hermes profile name. Profile dir is symlinked into ./runtime/.
+profile: candystore-pm
+
+# Telegram bot identity (one bot per agent — see docs/architecture.md).
+telegram:
+  bot_username: "candystore_pm_bot"
+
+# Email address (Cloudflare Email Routing on delo.sh).
+email:
+  address: "candystore-pm@delo.sh"
+  forward_to: "jaradd@gmail.com"
+
+# Plane project (1:1 with this agent).
+plane:
+  workspace: "33god"
+  # identifier is set by .scripts/40-plane.sh after creation
+  identifier: "CANPM"
+# Bloodbank wiring (consumed + produced subjects).
+bloodbank:
+  subscribe:
+    - "bloodbank.evt.v1.repo.candystore.>"
+    - "bloodbank.cmd.v1.agent.candystore-pm.>"
+  producer: "hermes-agent:candystore-pm"
+
+# Runtime repo (git-tracked HERMES_HOME, auto-checkpointed).
+runtime:
+  github_repo: "delorenj/agent-hm-candystore-pm"
+  submodule_path: "./runtime"
+  checkpoint:
+    cadence: "hourly"
+    on_session_end: true
+
+# Provenance — managed by the template, do not hand-edit.
+provisioned_at: "2026-05-24T06:59:49Z"
+provisioned_by: hermes-agent-template

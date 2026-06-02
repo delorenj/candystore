@@ -1,57 +1,31 @@
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
 *.egg-info/
-.installed.cfg
-*.egg
-
-# Virtual environments
-.venv/
-venv/
-ENV/
-env/
-
-# IDEs
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# Testing
 .pytest_cache/
+.ruff_cache/
 .coverage
 htmlcov/
-.tox/
+.venv/
+venv/
+dist/
+build/
 
-# Database
-*.db
-*.db-journal
-candystore.db
+# Node / Vite
+web/node_modules/
+web/dist/
+web/.vite/
 
-# Logs
-*.log
-logs/
-
-# Environment
+# Local runtime
 .env
 .env.local
+*.db
+*.log
 
-# OS
+# Worktrees and editor files
+.worktrees/
+.idea/
+.vscode/
+*.swp
+*.swo
 .DS_Store
-Thumbs.db
