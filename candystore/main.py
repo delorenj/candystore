@@ -176,7 +176,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             result = handle_event(raw)
         except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
-            self._send_json(400, {"status": "DROP", "error": str(exc)})
+            # Dapr only honors DROP on a 2xx response; a non-2xx status means
+            # "retry", which turns malformed events into poison messages that
+            # redeliver every ackWait forever.
+            self._send_json(200, {"status": "DROP", "error": str(exc)})
             return
         except Exception as exc:
             self._send_json(500, {"status": "RETRY", "error": str(exc)})

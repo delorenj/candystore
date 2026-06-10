@@ -24,3 +24,15 @@ run = "ruff check candystore/ tests/"
 [tasks."build:ui"]
 description = "Build React SPA into static/"
 run = "cd web && npm run build"
+
+[tasks.up]
+description = "Boot the full stack (postgres + app + daprd)"
+run = "docker compose up -d --build --remove-orphans"
+
+[tasks.down]
+description = "Stop the stack (volumes preserved)"
+run = "docker compose down --remove-orphans"
+
+[tasks.logs]
+description = "Tail stack logs"
+run = "docker compose logs -f --tail=100"

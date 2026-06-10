@@ -1,0 +1,127 @@
+# Candystore — full-stack orchestration.
+#
+# Brings up the complete candystore stack:
+#   - postgres    PostgreSQL 16 event store (schema applied by the app on boot
+#                 via migrations/*.sql — no initdb mount needed)
+#   - candystore  Ingestion + REST API + React UI. The UI is built into the
+#                 image from static/ (rebuild with `mise run build:ui` before
+#                 `docker compose build` to pick up web/ changes)
+#   - daprd       Dapr sidecar that subscribes to Bloodbank events over NATS
+#                 JetStream using dapr-components/pubsub.yaml (durable
+#                 consumer `candystore-events`, queue group `candystore`)
+#
+# Event transport rides the Bloodbank backbone: daprd joins the external
+# `bloodbank-network` to reach `nats:4222` and `dapr-placement:50005`.
+# Bring up bloodbank first:
+#   cd ../bloodbank && docker compose -f compose/docker-compose.yml up -d
+# If NATS is unreachable daprd crash-loops until it appears; postgres, the
+# API, and the UI keep working regardless.
+#
+# MUTUAL EXCLUSION: bloodbank/compose/docker-compose.yml ships a legacy
+# `candystore` profile (bloodbank-candystore) that mounts this same
+# dapr-components/ dir. Both sidecars would join the same JetStream durable
+# + queue group and split events between two databases. Run one or the
+# other, never both.
+
+name: candystore
+
+networks:
+  # App <-> postgres <-> sidecar traffic stays on this network. The app and
+  # postgres deliberately do NOT join bloodbank-network: it carries
+  # `candystore` and `postgres` DNS aliases from the bloodbank compose
+  # project, and a service on both networks would resolve those names
+  # ambiguously.
+  candystore-internal:
+    name: candystore-internal
+  bloodbank-network:
+    external: true
+
+volumes:
+  # Fresh name: `candystore-postgres-data` is taken by the retired
+  # FastAPI-era stack's volume (candystore_candystore-postgres-data), which
+  # holds an incompatible schema.
+  pgdata:
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: candystore-postgres
+    environment:
+      POSTGRES_USER: candystore
+      POSTGRES_PASSWORD: candystore
+      POSTGRES_DB: candystore
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${CANDYSTORE_POSTGRES_PORT:-5434}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U candystore -d candystore"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks:
+      - candystore-internal
+    restart: unless-stopped
+
+  candystore:
+    build:
+      context: .
+    image: candystore:local
+    container_name: candystore
+    environment:
+      APP_PORT: "3001"
+      DATABASE_URL: "postgresql://candystore:candystore@postgres:5432/candystore"
+      SUBSCRIBE_PUBSUB: "bloodbank-pubsub"
+      SUBSCRIBE_TOPIC: "bloodbank.evt.v1.>"
+      SUBSCRIBE_ROUTE: "/events/all"
+    ports:
+      # API + UI. 8683 follows the 33GOD port scheme (bloodbank API is 8682).
+      - "${CANDYSTORE_PORT:-8683}:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # python:3.11-slim ships neither wget nor curl.
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:3001/healthz', timeout=3)\"",
+        ]
+      interval: 30s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks:
+      candystore-internal:
+        # Unique alias for daprd's app channel; `candystore` alone also
+        # resolves on bloodbank-network (legacy profile) from daprd's view.
+        aliases:
+          - candystore-app
+    restart: unless-stopped
+
+  daprd:
+    image: daprio/daprd:1.13.0
+    container_name: candystore-daprd
+    command:
+      - "./daprd"
+      - "--app-id=candystore"
+      - "--dapr-http-port=3500"
+      - "--dapr-grpc-port=50001"
+      - "--app-port=3001"
+      - "--app-channel-address=candystore-app"
+      - "--app-protocol=http"
+      - "--resources-path=/components"
+      - "--placement-host-address=dapr-placement:50005"
+      - "--log-level=info"
+    volumes:
+      - ./dapr-components:/components:ro
+    ports:
+      - "127.0.0.1:${CANDYSTORE_DAPR_HTTP_PORT:-3504}:3500"
+    depends_on:
+      candystore:
+        condition: service_healthy
+    networks:
+      - candystore-internal
+      - bloodbank-network
+    restart: unless-stopped
