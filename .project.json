@@ -1,0 +1,20 @@
+{
+  "project_name": "Candystore",
+  "project_description": "Bloodbank durable event audit trail",
+  "project_slug": "candystore",
+  "repo_path": "/home/delorenj/code/33GOD/candystore",
+  "ticket_provider": {
+    "type": "plane",
+    "workspace": "33god",
+    "identifier": "CAND",
+    "board_id": "",
+    "board_url": "",
+    "state": "planned"
+  },
+  "agents": {
+    "candystore-pm": {
+      "role": "pm",
+      "role_dir": "agents/hermes/pm"
+    }
+  }
+}

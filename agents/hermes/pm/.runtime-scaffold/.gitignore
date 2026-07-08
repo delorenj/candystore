@@ -7,6 +7,7 @@ gateway.pid
 gateway_state.json
 processes.json
 interrupt_debug.log
+.clean_shutdown
 
 # Caches (large, regenerable)
 audio_cache/
@@ -19,13 +20,16 @@ honcho.json
 sandboxes/
 bloodbank-inbox/
 
-# Runtime logs (we want the LFS-tracked summary.log if we add one, not the noise)
-logs/*.log
-logs/*.systemd.log
+# Runtime logs and generated skill-curator backups are local noise.
+logs/**
+!logs/
+!logs/.gitkeep
+skills/.curator_backups/
+
+# SQLite sidecars are recreated at runtime.
+*.db-shm
+*.db-wal
 
 # Python cruft
 __pycache__/
 *.pyc
-
-# Allow these subdirs to exist
-!logs/.gitkeep
