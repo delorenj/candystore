@@ -6,10 +6,10 @@
   "ticket_provider": {
     "type": "plane",
     "workspace": "33god",
-    "identifier": "CAND",
-    "board_id": "",
-    "board_url": "",
-    "state": "planned"
+    "identifier": "CANDYS",
+    "board_id": "82e56896-e7fd-466b-826c-1019441c64ca",
+    "board_url": "https://plane.delo.sh/33god/projects/82e56896-e7fd-466b-826c-1019441c64ca/issues/",
+    "state": "active"
   },
   "agents": {
     "candystore-pm": {
