@@ -6,7 +6,7 @@ import os
 from typing import Any
 
 from candystore import stats
-from candystore.db import insert_event, sanitize_envelope
+from candystore.db import insert_event, record_dead_letter, sanitize_envelope
 
 logger = logging.getLogger("candystore.ingest")
 
@@ -59,10 +59,13 @@ def handle_event(body: bytes, topic: str | None = None) -> dict[str, Any]:
     inserted = insert_event(clean, sanitized=sanitized)
     if sanitized:
         # Persisted with NUL stripped rather than poison-looping forever. Not
-        # silent: mark the row (events.sanitized), count it, and log.
+        # silent, and not lossy: mark the row (events.sanitized), count it, log,
+        # and preserve the EXACT original bytes in dead_letter so the producer's
+        # true input stays recoverable (jsonb cannot hold the NUL itself).
         stats.incr("sanitized")
         logger.warning(
             "stripped NUL before insert: event %s topic=%s", clean.get("id"), topic
         )
+        record_dead_letter(body, reason="nul-sanitized", topic=topic, event_id=clean.get("id"))
     stats.incr("inserted" if inserted else "duplicate")
     return {"status": "SUCCESS", "inserted": inserted}

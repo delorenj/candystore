@@ -185,10 +185,11 @@ class Handler(BaseHTTPRequestHandler):
         raw = self.rfile.read(int(self.headers.get("Content-Length", "0") or "0"))
         try:
             result = handle_event(raw, topic=path)
-        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
-            # Malformed / off-contract event. Dapr only honors DROP on a 2xx
-            # response; a non-2xx means "retry", which turns a bad event into a
-            # poison message that redelivers every ackWait forever.
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError, RecursionError) as exc:
+            # Malformed / off-contract event (RecursionError = pathologically
+            # nested JSON, un-parseable and thus permanent, not transient). Dapr
+            # only honors DROP on a 2xx response; a non-2xx means "retry", which
+            # turns a bad event into a poison message that redelivers forever.
             self._drop(raw, path, "malformed", exc)
             return
         except (psycopg2.DataError, psycopg2.IntegrityError) as exc:

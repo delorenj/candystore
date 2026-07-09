@@ -94,8 +94,18 @@ def test_nul_event_is_sanitized_and_persisted(db, sample_event):
             row = cur.fetchone()
         assert row is not None, "NUL event must be persisted, not dropped"
         assert row[0] is True                      # sanitized flag set
-        assert "\x00" not in row[1] and "\x00" not in row[2]
-        assert _count("dead_letter") == 0          # sanitize uses the flag, not dead_letter
+        assert "\x00" not in row[1] and "\x00" not in row[2]   # jsonb is clean
+        # exact original bytes (incl. the NUL) preserved in dead_letter so the
+        # producer's true input is recoverable
+        assert _count("dead_letter") == 1
+        with cursor() as cur:
+            cur.execute("SELECT reason, raw FROM dead_letter LIMIT 1")
+            dl = cur.fetchone()
+        assert dl[0] == "nul-sanitized"
+        # exact original is recoverable from the preserved bytes (the NUL rides
+        # the wire as a  JSON escape; round-tripping restores it)
+        recovered = json.loads(bytes(dl[1]))
+        assert "\x00" in recovered["data"]["command"]
     finally:
         server.shutdown()
         thread.join(timeout=3)
@@ -170,3 +180,35 @@ def test_transient_error_retries_and_does_not_dead_letter(db, sample_event, monk
     finally:
         server.shutdown()
         thread.join(timeout=3)
+
+
+def test_deeply_nested_json_drops_not_retries(db):
+    # A pathologically nested body makes json.loads raise RecursionError, which
+    # is NOT a ValueError — it must still DROP, not 500-RETRY into a poison loop.
+    n = 100000
+    bad = (b'{"a":' * n) + b"1" + (b"}" * n)
+    server, thread = _serve()
+    host, port = server.server_address
+    try:
+        status, body = _request(host, port, "POST", "/events/all", raw=bad)
+        assert status == 200                       # never 500
+        assert body["status"] == "DROP"
+        assert _count("dead_letter") == 1
+    finally:
+        server.shutdown()
+        thread.join(timeout=3)
+
+
+def test_record_dead_letter_strips_nul_from_text_columns(db):
+    from candystore.db import record_dead_letter
+
+    ok = record_dead_letter(
+        b"raw-body", reason="db-data-error\x00x", error="boom\x00", topic="t\x00"
+    )
+    assert ok is True
+    with cursor() as cur:
+        cur.execute("SELECT reason, error, topic FROM dead_letter LIMIT 1")
+        reason, error, topic = cur.fetchone()
+    assert reason == "db-data-errorx"
+    assert error == "boom"
+    assert topic == "t"

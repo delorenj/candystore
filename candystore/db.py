@@ -139,11 +139,19 @@ def record_dead_letter(
             raw_bytes = bytes(raw)
         else:
             raw_bytes = str(raw).encode("utf-8", "replace")
+        # The TEXT columns cannot hold a NUL either; strip it so recording a
+        # NUL-bearing error message can never itself fail and lose the record.
         with cursor() as cur:
             cur.execute(
                 "INSERT INTO dead_letter (event_id, topic, reason, error, raw) "
                 "VALUES (%s, %s, %s, %s, %s)",
-                (event_id, topic, reason, error, psycopg2.Binary(raw_bytes)),
+                (
+                    _no_nul(event_id),
+                    _no_nul(topic),
+                    _no_nul(reason),
+                    _no_nul(error),
+                    psycopg2.Binary(raw_bytes),
+                ),
             )
         return True
     except Exception:
@@ -181,6 +189,10 @@ def sanitize_envelope(envelope: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     """Return (clean_envelope, sanitized) with every NUL char removed."""
     clean, changed = _strip_nul(envelope)
     return clean, changed
+
+
+def _no_nul(value: str | None) -> str | None:
+    return value.replace("\x00", "") if isinstance(value, str) else value
 
 
 def _validate_envelope(envelope: dict[str, Any]) -> None:
