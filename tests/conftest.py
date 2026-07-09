@@ -19,7 +19,7 @@ def db(monkeypatch: pytest.MonkeyPatch):
     try:
         init_schema()
         with cursor() as cur:
-            cur.execute("TRUNCATE events")
+            cur.execute("TRUNCATE events, dead_letter")
     except Exception as exc:
         pytest.skip(f"Postgres unavailable for candystore tests: {exc}")
 

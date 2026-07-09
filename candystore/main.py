@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import mimetypes
 import os
 import sys
@@ -11,7 +12,10 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 from uuid import UUID
 
-from candystore.db import check_connection, init_schema
+import psycopg2
+
+from candystore import stats
+from candystore.db import check_connection, init_schema, record_dead_letter
 from candystore.ingest import handle_event, known_event_routes, subscribe_response
 from candystore.query import (
     by_cli,
@@ -26,7 +30,13 @@ from candystore.query import (
 )
 from candystore.summarize import summarize
 
-APP_HOST = os.environ.get("APP_HOST", "0.0.0.0")
+logger = logging.getLogger("candystore")
+
+# Default to loopback so a bare `python -m candystore.main` never exposes the
+# unauthenticated ingest+query API to the LAN. The container overrides this to
+# 0.0.0.0 (see compose.yml) so the Dapr sidecar can reach the app over the
+# docker network; the host port is published on 127.0.0.1 there.
+APP_HOST = os.environ.get("APP_HOST", "127.0.0.1")
 APP_PORT = int(os.environ.get("APP_PORT", "3001"))
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
@@ -174,18 +184,36 @@ class Handler(BaseHTTPRequestHandler):
 
         raw = self.rfile.read(int(self.headers.get("Content-Length", "0") or "0"))
         try:
-            result = handle_event(raw)
+            result = handle_event(raw, topic=path)
         except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
-            # Dapr only honors DROP on a 2xx response; a non-2xx status means
-            # "retry", which turns malformed events into poison messages that
-            # redeliver every ackWait forever.
-            self._send_json(200, {"status": "DROP", "error": str(exc)})
+            # Malformed / off-contract event. Dapr only honors DROP on a 2xx
+            # response; a non-2xx means "retry", which turns a bad event into a
+            # poison message that redelivers every ackWait forever.
+            self._drop(raw, path, "malformed", exc)
+            return
+        except (psycopg2.DataError, psycopg2.IntegrityError) as exc:
+            # The DB rejected the value as un-storable (e.g. a NUL that slipped
+            # past sanitization, an out-of-range timestamp, a NOT NULL breach).
+            # This is a permanent data defect, not a transient failure — DROP it
+            # (with a dead_letter record) rather than 500-retry it forever.
+            self._drop(raw, path, "db-data-error", exc)
             return
         except Exception as exc:
+            # Genuinely transient (DB down, connection reset, etc.). RETRY is
+            # correct: NATS redelivers and the idempotent insert dedupes.
+            stats.incr("retried")
+            logger.error("RETRY event on %s: %s", path, exc)
             self._send_json(500, {"status": "RETRY", "error": str(exc)})
             return
 
         self._send_json(200, result)
+
+    def _drop(self, raw: bytes, topic: str, reason: str, exc: Exception) -> None:
+        """Acknowledge (200) an un-storable event after preserving its bytes."""
+        stats.incr("dropped")
+        record_dead_letter(raw, reason=reason, topic=topic, error=str(exc))
+        logger.warning("DROP event on %s (%s): %s", topic, reason, exc)
+        self._send_json(200, {"status": "DROP", "error": str(exc)})
 
     def _send_json(self, status: int, body: object) -> None:
         payload = json.dumps(body, default=_json_default).encode("utf-8")
@@ -243,9 +271,14 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def run(host: str = APP_HOST, port: int = APP_PORT) -> None:
+    logging.basicConfig(
+        level=os.environ.get("LOG_LEVEL", "INFO"),
+        stream=sys.stderr,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
     init_schema()
     server = ThreadingHTTPServer((host, port), Handler)
-    sys.stderr.write(f"candystore: listening on {host}:{port}\n")
+    logger.info("candystore: listening on %s:%s", host, port)
     sys.stderr.flush()
     try:
         server.serve_forever()

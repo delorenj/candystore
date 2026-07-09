@@ -31,7 +31,14 @@ handled idempotently and return HTTP 200 to prevent Dapr retry loops. The same
 applies to malformed events: respond 200 with `{"status": "DROP"}` — Dapr
 treats any non-2xx as retriable and will redeliver forever.
 
-`compose.yml` is the deployment entry point (app on :8683, postgres on
+The ingest+query API has **no authentication** and holds the full org-wide
+event history, so every host port is published on **127.0.0.1 only**. The app
+binds 0.0.0.0 *inside* the container (via `APP_HOST=0.0.0.0` in compose) purely
+so the Dapr sidecar can reach it over `candystore-internal`; `main.py` defaults
+`APP_HOST` to 127.0.0.1 for bare local runs. Remote/Candybar access must go
+through an authenticating reverse proxy (Traefik + Cloudflare Access).
+
+`compose.yml` is the deployment entry point (app on 127.0.0.1:8683, postgres on
 127.0.0.1:5434, dapr HTTP on 127.0.0.1:3504). It joins the external
 `bloodbank-network` for NATS/placement. Never run it alongside the legacy
 `candystore` profile in `bloodbank/compose/docker-compose.yml` — both

@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import logging
 import os
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import psycopg2
 from psycopg2.extras import Json
+
+logger = logging.getLogger("candystore.db")
 
 DEFAULT_DATABASE_URL = "postgresql://candystore:candystore@localhost:5432/candystore"
 
@@ -63,12 +67,16 @@ def check_connection() -> bool:
         return cur.fetchone() == (1,)
 
 
-def insert_event(envelope: dict[str, Any]) -> bool:
+def insert_event(envelope: dict[str, Any], sanitized: bool = False) -> bool:
     """Insert a CloudEvents envelope.
 
     Returns True when a new row was inserted and False when the event ID
     already existed. Duplicate IDs are intentionally treated as success so Dapr
     does not retry already-persisted messages.
+
+    ``sanitized`` records that the envelope had a PostgreSQL-unstorable value
+    (e.g. a NUL) stripped before insert (see ``sanitize_envelope``); the caller
+    is responsible for stripping — this only sets the marker column.
     """
     _validate_envelope(envelope)
 
@@ -76,8 +84,8 @@ def insert_event(envelope: dict[str, Any]) -> bool:
     INSERT INTO events (
         id, specversion, source, type, subject, time, datacontenttype,
         dataschema, correlationid, causationid, producer, service, domain,
-        schemaref, traceparent, kind, actor, data, ordering_key, raw
-    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        schemaref, traceparent, kind, actor, data, ordering_key, sanitized, raw
+    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     ON CONFLICT (id) DO NOTHING
     RETURNING id
     """
@@ -103,6 +111,7 @@ def insert_event(envelope: dict[str, Any]) -> bool:
         Json(actor) if actor is not None else None,
         Json(data) if data is not None else None,
         envelope.get("ordering_key"),
+        sanitized,
         Json(envelope),
     )
 
@@ -111,11 +120,88 @@ def insert_event(envelope: dict[str, Any]) -> bool:
         return cur.fetchone() is not None
 
 
+def record_dead_letter(
+    raw: bytes | str,
+    *,
+    reason: str,
+    topic: str | None = None,
+    error: str | None = None,
+    event_id: str | None = None,
+) -> bool:
+    """Persist an event candystore refused to store, preserving the exact bytes.
+
+    Best-effort: this MUST NOT raise. It runs on the DROP path, and a failure
+    here (e.g. DB briefly down) must not turn a known-bad event back into a 500
+    that Dapr redelivers forever. On failure it logs and returns False.
+    """
+    try:
+        if isinstance(raw, bytes | bytearray):
+            raw_bytes = bytes(raw)
+        else:
+            raw_bytes = str(raw).encode("utf-8", "replace")
+        with cursor() as cur:
+            cur.execute(
+                "INSERT INTO dead_letter (event_id, topic, reason, error, raw) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (event_id, topic, reason, error, psycopg2.Binary(raw_bytes)),
+            )
+        return True
+    except Exception:
+        logger.exception("failed to record dead_letter (reason=%s topic=%s)", reason, topic)
+        return False
+
+
+def _strip_nul(value: Any) -> tuple[Any, bool]:
+    """Recursively strip U+0000 from strings. Postgres jsonb/text cannot store
+    a NUL, so an event carrying one raises DataError and (pre-fix) poison-loops.
+    Returns (clean_value, changed)."""
+    if isinstance(value, str):
+        return (value.replace("\x00", ""), True) if "\x00" in value else (value, False)
+    if isinstance(value, dict):
+        changed = False
+        out: dict[Any, Any] = {}
+        for key, val in value.items():
+            clean_key, k_changed = _strip_nul(key)
+            clean_val, v_changed = _strip_nul(val)
+            out[clean_key] = clean_val
+            changed = changed or k_changed or v_changed
+        return out, changed
+    if isinstance(value, list):
+        changed = False
+        out_list = []
+        for item in value:
+            clean_item, i_changed = _strip_nul(item)
+            out_list.append(clean_item)
+            changed = changed or i_changed
+        return out_list, changed
+    return value, False
+
+
+def sanitize_envelope(envelope: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Return (clean_envelope, sanitized) with every NUL char removed."""
+    clean, changed = _strip_nul(envelope)
+    return clean, changed
+
+
 def _validate_envelope(envelope: dict[str, Any]) -> None:
     missing = [field for field in REQUIRED_ENVELOPE_FIELDS if not envelope.get(field)]
     if missing:
         raise ValueError(f"missing CloudEvents fields: {', '.join(missing)}")
     uuid.UUID(str(envelope["id"]))
+    _validate_time(envelope["time"])
+
+
+def _validate_time(value: Any) -> None:
+    """Reject an unparseable timestamp at validation (→ DROP + dead_letter) so a
+    bad `time` surfaces with a clear reason instead of a raw DB DataError. A
+    wrongly-rejected value is still recoverable from dead_letter, so strictness
+    here never means silent loss."""
+    text = str(value).strip()
+    normalized = text[:-1] + "+00:00" if text.endswith(("Z", "z")) else text
+    try:
+        datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise ValueError(f"invalid time: {value!r}") from exc
 
 
 def _uuid_or_none(val: Any) -> str | None:

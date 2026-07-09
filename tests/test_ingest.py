@@ -30,7 +30,7 @@ def test_subscribe_response_can_enumerate_explicit_topics(monkeypatch):
 def test_handle_event_reports_idempotent_success(monkeypatch, sample_event):
     calls = []
 
-    def fake_insert(envelope):
+    def fake_insert(envelope, sanitized=False):
         calls.append(envelope)
         return False
 

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Any
 
-from candystore.db import insert_event
+from candystore import stats
+from candystore.db import insert_event, sanitize_envelope
+
+logger = logging.getLogger("candystore.ingest")
 
 SUBSCRIBE_PUBSUB = os.environ.get("SUBSCRIBE_PUBSUB", "bloodbank-pubsub")
 SUBSCRIBE_TOPIC = os.environ.get("SUBSCRIBE_TOPIC", "bloodbank.evt.v1.>")
@@ -46,10 +50,19 @@ def known_event_routes() -> set[str]:
     return routes
 
 
-def handle_event(body: bytes) -> dict[str, Any]:
+def handle_event(body: bytes, topic: str | None = None) -> dict[str, Any]:
     envelope = json.loads(body.decode("utf-8"))
     if not isinstance(envelope, dict):
         raise ValueError("envelope must be a JSON object")
 
-    inserted = insert_event(envelope)
+    clean, sanitized = sanitize_envelope(envelope)
+    inserted = insert_event(clean, sanitized=sanitized)
+    if sanitized:
+        # Persisted with NUL stripped rather than poison-looping forever. Not
+        # silent: mark the row (events.sanitized), count it, and log.
+        stats.incr("sanitized")
+        logger.warning(
+            "stripped NUL before insert: event %s topic=%s", clean.get("id"), topic
+        )
+    stats.incr("inserted" if inserted else "duplicate")
     return {"status": "SUCCESS", "inserted": inserted}

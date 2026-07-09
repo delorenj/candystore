@@ -71,13 +71,24 @@ services:
     container_name: candystore
     environment:
       APP_PORT: "3001"
+      # Bind 0.0.0.0 INSIDE the container so the daprd sidecar can reach the app
+      # over candystore-internal (app-channel-address=candystore-app). This is
+      # safe because the host port below is published on 127.0.0.1 only — the
+      # container is not directly reachable from the LAN. The code default is
+      # 127.0.0.1 (see candystore/main.py) for bare local runs.
+      APP_HOST: "0.0.0.0"
       DATABASE_URL: "postgresql://candystore:candystore@postgres:5432/candystore"
       SUBSCRIBE_PUBSUB: "bloodbank-pubsub"
       SUBSCRIBE_TOPIC: "bloodbank.evt.v1.>"
       SUBSCRIBE_ROUTE: "/events/all"
     ports:
       # API + UI. 8683 follows the 33GOD port scheme (bloodbank API is 8682).
-      - "${CANDYSTORE_PORT:-8683}:3001"
+      # Published on 127.0.0.1 ONLY: the ingest+query API is unauthenticated and
+      # holds the full org-wide history, so it must not be reachable from the LAN
+      # (192.168.1.0/24). Same 127.0.0.1 discipline as postgres/daprd below.
+      # Remote/Candybar access should go through an authenticating reverse proxy
+      # (Traefik + Cloudflare Access) per the *.delo.sh convention — see CANDYS E2.
+      - "127.0.0.1:${CANDYSTORE_PORT:-8683}:3001"
     depends_on:
       postgres:
         condition: service_healthy
