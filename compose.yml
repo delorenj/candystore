@@ -35,6 +35,14 @@ networks:
     name: candystore-internal
   bloodbank-network:
     external: true
+  # Traefik reverse-proxy network. The candystore service joins this so Traefik
+  # can reach it over an internal docker network while the host port stays
+  # 127.0.0.1-only. Remote access is gated by the `google-auth` OIDC middleware
+  # at candystore.delo.sh — see docker/core/traefik/.../dynamic/candystore.yml
+  # and candystore/CLAUDE.md (incident E2). Only the app service joins proxy;
+  # postgres/daprd stay off it.
+  proxy:
+    external: true
 
 volumes:
   # Fresh name: `candystore-postgres-data` is taken by the retired
@@ -109,6 +117,8 @@ services:
         # resolves on bloodbank-network (legacy profile) from daprd's view.
         aliases:
           - candystore-app
+      # Traefik reaches the app here as `http://candystore:3001`.
+      proxy: {}
     restart: unless-stopped
 
   daprd:
