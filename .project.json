@@ -8,13 +8,19 @@
     "workspace": "33god",
     "identifier": "CANDYS",
     "board_id": "82e56896-e7fd-466b-826c-1019441c64ca",
-    "board_url": "https://plane.delo.sh/33god/projects/82e56896-e7fd-466b-826c-1019441c64ca/issues/",
     "state": "active"
   },
   "agents": {
     "candystore-pm": {
       "role": "pm",
       "role_dir": "agents/hermes/pm"
+    }
+  },
+  "automation": {
+    "reconcile": {
+      "enabled": false,
+      "grace_hours": 0,
+      "auto_review": true
     }
   }
 }
