@@ -6,11 +6,10 @@
 bmb_creations_output_folder: "{project-root}/_bmad-output/bmb-creations"
 bmad_builder_output_folder: "{project-root}/skills"
 bmad_builder_reports: "{project-root}/skills/reports"
-  "{ PROJECT_NAME }": null
 
 # Core Configuration Values
 user_name: Jarad
 communication_language: English
 document_output_language: English
 output_folder: "{project-root}/_bmad-output"
-project_name:
+project_name: candystore
