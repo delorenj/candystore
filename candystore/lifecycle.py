@@ -5,11 +5,12 @@ from typing import Any
 
 from psycopg2.extras import Json
 
+from candystore.bloodbank_contracts import (
+    AuthorityContractError,
+    log_rejection,
+    validate_projection_candidate,
+)
 from candystore.db import cursor
-
-SNAPSHOT_TYPE = "bloodbank.v1.lifecycle.snapshot.updated"
-INTENT_REPLY_TYPE = "bloodbank.v1.lifecycle.intent.submit"
-INTENT_REPLY_SUBJECT = "bloodbank.rpy.v1.lifecycle.intent.submit"
 
 
 def project_lifecycle_envelope(cur: Any, envelope: dict[str, Any]) -> None:
@@ -20,11 +21,17 @@ def project_lifecycle_envelope(cur: Any, envelope: dict[str, Any]) -> None:
     delivery is retained in the audit trail but cannot roll the read model back.
     """
 
-    event_type = str(envelope.get("type", ""))
-    subject = str(envelope.get("subject", ""))
-    if event_type == SNAPSHOT_TYPE:
+    try:
+        projection_kind = validate_projection_candidate(envelope)
+    except AuthorityContractError as exc:
+        # The immutable audit row remains useful evidence of attempted spoofing
+        # or contract drift. It is intentionally excluded from the projection
+        # without a receipt; operational database errors are not caught here.
+        log_rejection(envelope, exc)
+        return
+    if projection_kind == "snapshot":
         _project_snapshot(cur, envelope)
-    elif event_type == INTENT_REPLY_TYPE and subject == INTENT_REPLY_SUBJECT:
+    elif projection_kind == "verdict":
         _project_verdict(cur, envelope)
 
 
@@ -43,9 +50,11 @@ def get_lifecycle_projection(
                    progress_percent, state_fingerprint, legal_frontier,
                    obligations, blockers, gates, capabilities, provenance,
                    freshness, publication, source_event_id, source_event_type,
-                   source_event_time, source_ordering_key, projected_at
+                   source_event_time, source_ordering_key, projected_at,
+                   events.raw
             FROM lifecycle_projections
-            WHERE lifecycle_id = %s
+            JOIN events ON events.id = lifecycle_projections.source_event_id
+            WHERE lifecycle_projections.lifecycle_id = %s
             """,
             (lifecycle_id,),
         )
@@ -75,9 +84,11 @@ def list_lifecycle_projections(
                    progress_percent, state_fingerprint, legal_frontier,
                    obligations, blockers, gates, capabilities, provenance,
                    freshness, publication, source_event_id, source_event_type,
-                   source_event_time, source_ordering_key, projected_at
+                   source_event_time, source_ordering_key, projected_at,
+                   events.raw
             FROM lifecycle_projections
-            ORDER BY lifecycle_id
+            JOIN events ON events.id = lifecycle_projections.source_event_id
+            ORDER BY lifecycle_projections.lifecycle_id
             LIMIT %s OFFSET %s
             """,
             (limit, offset),
@@ -323,6 +334,7 @@ def _projection_from_row(
             "event_time": _iso(row[20]),
             "ordering_key": row[21],
             "projected_at": _iso(row[22]),
+            **_source_authority_metadata(row[23]),
         },
         "command_verdicts": verdicts,
     }
@@ -356,6 +368,24 @@ def _unknown_projection(
         "publication": None,
         "source": None,
         "command_verdicts": verdicts,
+    }
+
+
+def _source_authority_metadata(envelope: Any) -> dict[str, Any]:
+    if not isinstance(envelope, dict):
+        return {}
+    return {
+        "subject": envelope.get("subject"),
+        "authority_source": envelope.get("source"),
+        "producer": envelope.get("producer"),
+        "service": envelope.get("service"),
+        "kind": envelope.get("kind"),
+        "domain": envelope.get("domain"),
+        "schema_ref": envelope.get("schemaref"),
+        "data_schema": envelope.get("dataschema"),
+        "actor": envelope.get("actor"),
+        "correlation_id": envelope.get("correlationid"),
+        "causation_id": envelope.get("causationid"),
     }
 
 

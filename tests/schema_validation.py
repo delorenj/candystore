@@ -12,8 +12,8 @@ SCHEMA_BY_REF = {
     "bloodbank.v1.lifecycle.intent.submit.reply.v1": (
         "bloodbank/v1/lifecycle/intent.submit.reply.v1.json"
     ),
-    "bloodbank.v1.lifecycle.snapshot.updated.v2": (
-        "bloodbank/v1/lifecycle/snapshot.updated.v2.json"
+    "bloodbank.v1.lifecycle.snapshot.updated.v3": (
+        "bloodbank/v1/lifecycle/snapshot.updated.v3.json"
     ),
 }
 

@@ -8,7 +8,9 @@ projection. It is not an operational Lifecycle writer.
 ## Current Lifecycle slice
 
 The durable `candystore-events` JetStream/Dapr consumer accepts canonical
-Bloodbank lifecycle events. In the same database transaction as event
+Bloodbank lifecycle events. Lifecycle snapshot v3 supplies stable obligation
+occurrence identity and activation time in addition to versioned capabilities.
+In the same database transaction as event
 persistence it applies replay-safe projection logic backed by migration
 `003_lifecycle_projection.sql`.
 
@@ -21,13 +23,25 @@ model change, and durable redelivery retries the unchanged canonical row. For a
 new event, audit insertion, receipt, and projection either commit together or
 abort together.
 
+Before claiming a receipt, Candystore validates every snapshot/reply candidate
+with the exact Bloodbank JSON Schema tree selected by `BLOODBANK_SCHEMAS_DIR`
+and then requires Lifecycle's canonical envelope source, producer, service,
+actor, subject/type/kind/domain, schema version, and authority provenance. A
+contract-invalid or spoofed candidate remains in append-only `events` history
+as evidence but is excluded from projections and verdicts. This intentional
+contract rejection is distinct from an operational database failure: the
+latter still rolls the transaction back, while a pre-existing canonical audit
+row remains retryable without accepting a conflicting duplicate body.
+
 The read model retains:
 
 - lifecycle and project identity;
 - `spec_version` and `state_version`;
 - status, health, phase, and deterministic fingerprint when present;
 - source observation, provenance, freshness, and as-of time;
+- the immutable snapshot event ID and its correlation/causation lineage;
 - legal frontier, obligations, blockers, and gates;
+- authority-owned obligation occurrence IDs and activation times;
 - authority-owned capability IDs and `capability_version`; and
 - stable Lifecycle command verdicts.
 
@@ -55,5 +69,7 @@ DATABASE_URL=postgresql://... mise run test:schema
 ```
 
 The focused suite covers migration repeatability, replay, idempotency,
-version ordering, provenance/freshness, explicit unknown/degraded behavior,
-stable verdicts, and read-only ownership.
+version ordering, exact-schema/authority validation, snapshot and reply spoof
+rejection, conflicting duplicate integrity, transaction rollback/retry,
+provenance/causal metadata, explicit unknown/degraded behavior, stable
+verdicts, and read-only ownership.

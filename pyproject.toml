@@ -4,12 +4,12 @@ version = "0.1.0"
 description = "Bloodbank event audit trail and observability"
 requires-python = ">=3.11"
 dependencies = [
+    "jsonschema>=4.0",
     "psycopg2-binary>=2.9",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "jsonschema>=4.0",
     "pytest>=8.0",
     "ruff>=0.8",
 ]

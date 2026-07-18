@@ -86,6 +86,7 @@ services:
       # 127.0.0.1 (see candystore/main.py) for bare local runs.
       APP_HOST: "0.0.0.0"
       DATABASE_URL: "postgresql://candystore:candystore@postgres:5432/candystore"
+      BLOODBANK_SCHEMAS_DIR: "/bloodbank-schemas"
       SUBSCRIBE_PUBSUB: "bloodbank-pubsub"
       SUBSCRIBE_TOPIC: "bloodbank.evt.v1.>"
       SUBSCRIBE_ROUTE: "/events/all"
@@ -97,6 +98,11 @@ services:
       # Remote/Candybar access should go through an authenticating reverse proxy
       # (Traefik + Cloudflare Access) per the *.delo.sh convention — see CANDYS E2.
       - "127.0.0.1:${CANDYSTORE_PORT:-8683}:3001"
+    volumes:
+      - type: bind
+        source: ${BLOODBANK_SCHEMAS_DIR:-../bloodbank/schemas}
+        target: /bloodbank-schemas
+        read_only: true
     depends_on:
       postgres:
         condition: service_healthy

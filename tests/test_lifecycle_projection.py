@@ -24,7 +24,12 @@ COMMAND_EVENT_ID = "55555555-5555-4555-8555-555555555555"
 
 
 def test_snapshot_projection_is_replay_safe_and_version_ordered(db):
-    current = snapshot(version=2, sequence=4, status="active")
+    current = snapshot(
+        version=2,
+        sequence=4,
+        status="active",
+        obligations=[obligation("77777777-7777-4777-8777-777777777777")],
+    )
     assert insert_event(current) is True
     assert insert_event(current) is False
 
@@ -40,7 +45,15 @@ def test_snapshot_projection_is_replay_safe_and_version_ordered(db):
     assert result["authority_state"]["health"] == "nominal"
     assert result["provenance"]["authority"] == "delorenj/lifecycle"
     assert result["source"]["event_id"] == current["id"]
+    assert result["source"]["authority_source"] == "urn:33god:service:lifecycle"
+    assert result["source"]["subject"] == "bloodbank.evt.v1.lifecycle.snapshot.updated"
+    assert result["source"]["correlation_id"] == CORRELATION_ID
+    assert result["source"]["causation_id"] == CAUSATION_ID
+    assert result["source"]["actor"]["agent_id"] == "delorenj.lifecycle"
     assert result["capabilities"][0]["capability_version"] == 7
+    assert result["obligations"][0]["obligation_instance_id"] == (
+        "77777777-7777-4777-8777-777777777777"
+    )
 
     with cursor() as cur:
         cur.execute(
@@ -113,19 +126,133 @@ def test_stable_command_verdicts_are_projected_without_state_mutation(db):
     assert verdict["command_id"] == COMMAND_ID
 
 
-def test_projection_failure_aborts_append_and_receipt_atomically(db):
+def test_invalid_authority_candidate_is_audited_but_excluded_from_projection(db):
     invalid = snapshot(version=1, sequence=2)
     del invalid["data"]["provenance"]
 
-    with pytest.raises(ValueError, match="provenance"):
-        insert_event(invalid)
+    assert insert_event(invalid) is True
 
     with cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM events WHERE id = %s", (invalid["id"],))
-        assert cur.fetchone()[0] == 0
+        assert cur.fetchone()[0] == 1
         cur.execute(
             "SELECT COUNT(*) FROM lifecycle_projection_receipts WHERE event_id = %s",
             (invalid["id"],),
+        )
+        assert cur.fetchone()[0] == 0
+        cur.execute("SELECT COUNT(*) FROM lifecycle_projections")
+        assert cur.fetchone()[0] == 0
+
+
+def test_operational_projection_failure_rolls_back_audit_and_receipt(db, monkeypatch):
+    canonical = snapshot(version=1, sequence=2)
+
+    def fail_projection(cur, envelope):
+        raise RuntimeError("injected projection write failure")
+
+    monkeypatch.setattr("candystore.lifecycle._project_snapshot", fail_projection)
+    with pytest.raises(RuntimeError, match="injected projection write failure"):
+        insert_event(canonical)
+
+    with cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM events WHERE id = %s", (canonical["id"],))
+        assert cur.fetchone()[0] == 0
+        cur.execute(
+            "SELECT COUNT(*) FROM lifecycle_projection_receipts WHERE event_id = %s",
+            (canonical["id"],),
+        )
+        assert cur.fetchone()[0] == 0
+
+
+def test_preexisting_audit_row_survives_projection_failure_and_retries_canonically(db, monkeypatch):
+    canonical = snapshot(version=1, sequence=2)
+    assert insert_event(canonical)
+    with cursor() as cur:
+        cur.execute("DELETE FROM lifecycle_projections WHERE lifecycle_id = %s", (LIFECYCLE_ID,))
+        cur.execute(
+            "DELETE FROM lifecycle_projection_receipts WHERE event_id = %s",
+            (canonical["id"],),
+        )
+
+    with monkeypatch.context() as scoped:
+
+        def fail_retry(cur, envelope):
+            raise RuntimeError("retryable failure")
+
+        scoped.setattr("candystore.lifecycle._project_snapshot", fail_retry)
+        with pytest.raises(RuntimeError, match="retryable failure"):
+            insert_event(canonical)
+
+    with cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM events WHERE id = %s", (canonical["id"],))
+        assert cur.fetchone()[0] == 1
+        cur.execute(
+            "SELECT COUNT(*) FROM lifecycle_projection_receipts WHERE event_id = %s",
+            (canonical["id"],),
+        )
+        assert cur.fetchone()[0] == 0
+
+    assert insert_event(canonical) is False
+    result = get_lifecycle_projection(LIFECYCLE_ID)
+    assert result["source"]["event_id"] == canonical["id"]
+    assert result["state_version"] == 1
+
+
+def test_spoofed_snapshot_is_audited_but_cannot_create_or_replace_projection(db):
+    canonical = snapshot(version=2, sequence=4, status="active", phase="build")
+    assert insert_event(canonical)
+
+    spoof = snapshot(version=99, sequence=999, status="completed", phase="spoofed")
+    spoof["source"] = "urn:attacker"
+    spoof["subject"] = "evil.subject"
+    spoof["producer"] = "attacker"
+    spoof["service"] = "attacker"
+    spoof["actor"] = {"type": "service", "agent_id": "attacker"}
+    spoof["data"]["provenance"]["authority"] = "attacker"
+    assert insert_event(spoof)
+
+    result = get_lifecycle_projection(LIFECYCLE_ID)
+    assert result["state_version"] == 2
+    assert result["status"] == "active"
+    assert result["phase"] == "build"
+    assert result["source"]["event_id"] == canonical["id"]
+    with cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM events WHERE id = %s", (spoof["id"],))
+        assert cur.fetchone()[0] == 1
+        cur.execute(
+            "SELECT COUNT(*) FROM lifecycle_projection_receipts WHERE event_id = %s",
+            (spoof["id"],),
+        )
+        assert cur.fetchone()[0] == 0
+
+
+def test_spoofed_reply_is_audited_but_cannot_create_or_replace_verdict(db):
+    assert insert_event(snapshot(version=2, sequence=4, status="active"))
+    canonical_reply = reply(verdict="stale", observed=2)
+    assert insert_event(canonical_reply)
+
+    spoof = reply(verdict="illegal", observed=2)
+    spoof["id"] = str(uuid.uuid4())
+    spoof["data"]["command_id"] = str(uuid.uuid4())
+    spoof["data"]["reply_to_command_event_id"] = str(uuid.uuid4())
+    spoof["causationid"] = spoof["data"]["reply_to_command_event_id"]
+    spoof["source"] = "urn:attacker"
+    spoof["subject"] = "evil.subject"
+    spoof["producer"] = "attacker"
+    spoof["service"] = "attacker"
+    spoof["actor"] = {"type": "service", "agent_id": "attacker"}
+    assert insert_event(spoof)
+
+    result = get_lifecycle_projection(LIFECYCLE_ID)
+    assert len(result["command_verdicts"]) == 1
+    assert result["command_verdicts"][0]["reply_event_id"] == canonical_reply["id"]
+    assert result["command_verdicts"][0]["verdict"] == "stale"
+    with cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM events WHERE id = %s", (spoof["id"],))
+        assert cur.fetchone()[0] == 1
+        cur.execute(
+            "SELECT COUNT(*) FROM lifecycle_projection_receipts WHERE event_id = %s",
+            (spoof["id"],),
         )
         assert cur.fetchone()[0] == 0
 
@@ -230,6 +357,7 @@ def snapshot(
     sequence: int,
     status: str = "planned",
     phase: str | None = "plan",
+    obligations: list[dict] | None = None,
 ) -> dict:
     event_id = str(uuid.uuid4())
     previous = None if version == 1 else version - 1
@@ -242,22 +370,22 @@ def snapshot(
         "subject": "bloodbank.evt.v1.lifecycle.snapshot.updated",
         "time": "2026-07-18T12:00:00Z",
         "datacontenttype": "application/json",
-        "dataschema": ("apicurio://holyfields/bloodbank.v1.lifecycle.snapshot.updated/versions/2"),
+        "dataschema": ("apicurio://holyfields/bloodbank.v1.lifecycle.snapshot.updated/versions/3"),
         "correlationid": CORRELATION_ID,
         "causationid": CAUSATION_ID,
         "producer": "delorenj/lifecycle",
         "service": "lifecycle",
         "kind": "event",
         "domain": "lifecycle",
-        "schemaref": "bloodbank.v1.lifecycle.snapshot.updated.v2",
+        "schemaref": "bloodbank.v1.lifecycle.snapshot.updated.v3",
         "ordering_key": f"lifecycle:{LIFECYCLE_ID}",
         "actor": {
             "type": "service",
-            "agent_id": "delorenj/lifecycle",
+            "agent_id": "delorenj.lifecycle",
             "instance": "test-authority",
         },
         "data": {
-            "contract_version": 2,
+            "contract_version": 3,
             "lifecycle_id": LIFECYCLE_ID,
             "repo": "delorenj/33GOD",
             "spec_version": 1,
@@ -280,7 +408,7 @@ def snapshot(
                     "expected_state_version": version,
                 }
             ],
-            "obligations": [],
+            "obligations": obligations or [],
             "blockers": [],
             "gates": [],
             "capabilities": [
@@ -318,6 +446,24 @@ def snapshot(
     }
 
 
+def obligation(instance_id: str) -> dict:
+    return {
+        "id": "independent-review",
+        "obligation_instance_id": instance_id,
+        "activated_at": "2026-07-18T11:55:00Z",
+        "kind": "independent_review",
+        "status": "pending",
+        "description": "Complete an independent review",
+        "skill_ref": {
+            "name": "independent-review",
+            "selector": "1.0.0",
+        },
+        "owner_id": "momo",
+        "due_at": None,
+        "source_observation_ids": [],
+    }
+
+
 def reply(*, verdict: str, observed: int) -> dict:
     return {
         "specversion": "1.0",
@@ -339,7 +485,7 @@ def reply(*, verdict: str, observed: int) -> dict:
         "schemaref": "bloodbank.v1.lifecycle.intent.submit.reply.v1",
         "actor": {
             "type": "service",
-            "agent_id": "delorenj/lifecycle",
+            "agent_id": "delorenj.lifecycle",
             "instance": "test-authority",
         },
         "data": {

@@ -5,8 +5,10 @@ CloudEvents from Dapr pub/sub, stores the full envelope in PostgreSQL, exposes
 query and summary APIs, and serves a React UI from the same Python process.
 
 Candystore also maintains a replay-safe, version-ordered **read projection** of
-authoritative Lifecycle v2 snapshot events and stable command replies. The
-projection preserves the authority-owned `capability_version` on every grant.
+authoritative Lifecycle v3 snapshot events and stable command replies. The
+projection preserves the authority-owned `capability_version` on every grant,
+each obligation's `obligation_instance_id` and `activated_at`, and the exact
+snapshot event/correlation/causation lineage used by command clients.
 Lifecycle remains the sole writer of operational lifecycle truth; Candystore exposes no
 Lifecycle mutation endpoint. Snapshot events are consumed from the durable
 `BLOODBANK_EVENTS` stream and replies from a dedicated durable consumer on
@@ -17,6 +19,7 @@ Lifecycle mutation endpoint. Snapshot events are consumed from the durable
 ```bash
 pip install -e '.[dev]'
 DATABASE_URL=postgresql://candystore:candystore@localhost:5432/candystore \
+  BLOODBANK_SCHEMAS_DIR=../bloodbank/schemas \
   python -m candystore.main
 ```
 
@@ -60,6 +63,11 @@ authoritative freshness window has expired retains the original state under
 Event insertion and projection share one PostgreSQL transaction. After an
 insert attempt, including an ID conflict, Candystore locks and projects the
 canonical `events.raw` row already stored for that ID. It never applies the
-conflicting incoming body. A projection error aborts a new audit insert and its
+conflicting incoming body. Snapshot and reply candidates must validate against
+the exact mounted Bloodbank schema and Lifecycle's canonical source, producer,
+service, actor, subject/type/kind/domain, schema version, and provenance before
+a projection receipt is claimed. A contract-invalid or spoofed candidate stays
+in append-only audit history but is excluded from the read model and receives
+no receipt. An operational projection error aborts a new audit insert and its
 receipt together; for a pre-existing audit row it leaves that row unchanged and
 commits no receipt, so durable redelivery retries the same canonical body.
