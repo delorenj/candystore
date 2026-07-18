@@ -19,14 +19,20 @@ def db(monkeypatch: pytest.MonkeyPatch):
     try:
         init_schema()
         with cursor() as cur:
-            cur.execute("TRUNCATE events, dead_letter")
+            cur.execute(
+                "TRUNCATE lifecycle_command_verdicts, lifecycle_projections, "
+                "lifecycle_projection_receipts, events, dead_letter"
+            )
     except Exception as exc:
         pytest.skip(f"Postgres unavailable for candystore tests: {exc}")
 
     yield
 
     with cursor() as cur:
-        cur.execute("TRUNCATE events")
+        cur.execute(
+            "TRUNCATE lifecycle_command_verdicts, lifecycle_projections, "
+            "lifecycle_projection_receipts, events, dead_letter"
+        )
 
 
 @pytest.fixture

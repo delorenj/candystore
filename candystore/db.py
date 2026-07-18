@@ -117,7 +117,14 @@ def insert_event(envelope: dict[str, Any], sanitized: bool = False) -> bool:
 
     with cursor() as cur:
         cur.execute(sql, params)
-        return cur.fetchone() is not None
+        inserted = cur.fetchone() is not None
+        # Keep the audit row and its read projection in one transaction. The
+        # local import avoids coupling the generic database helpers to a
+        # particular domain at import time.
+        from candystore.lifecycle import project_lifecycle_envelope
+
+        project_lifecycle_envelope(cur, envelope)
+        return inserted
 
 
 def record_dead_letter(

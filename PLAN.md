@@ -1,4 +1,10 @@
-# Candystore Implementation Plan
+# Candystore Implementation Plan (historical)
+
+> This document records the original implementation plan and is not current
+> runtime authority. The implemented application, migrations, Dapr components,
+> tests, and `README.md` outrank the forward-looking snippets below. The current
+> Lifecycle slice is a durable, replay-safe, read-only projection; Candystore
+> has no operational Lifecycle mutation path.
 
 > **For Hermes:** Use `subagent-driven-development` skill to implement this plan task-by-task.  
 > **Architecture reference:** `docs/plans/candystore-architecture.md`

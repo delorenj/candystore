@@ -13,6 +13,9 @@ logger = logging.getLogger("candystore.ingest")
 SUBSCRIBE_PUBSUB = os.environ.get("SUBSCRIBE_PUBSUB", "bloodbank-pubsub")
 SUBSCRIBE_TOPIC = os.environ.get("SUBSCRIBE_TOPIC", "bloodbank.evt.v1.>")
 SUBSCRIBE_ROUTE = os.environ.get("SUBSCRIBE_ROUTE", "/events/all")
+LIFECYCLE_REPLY_PUBSUB = os.environ.get("LIFECYCLE_REPLY_PUBSUB", "bloodbank-command-results")
+LIFECYCLE_REPLY_TOPIC = "bloodbank.rpy.v1.lifecycle.intent.submit"
+LIFECYCLE_REPLY_ROUTE = "/events/lifecycle_intent_reply"
 
 EXPLICIT_TOPICS = [
     ("bloodbank.evt.v1.cli.session.started", "/events/cli_session_started"),
@@ -30,22 +33,30 @@ EXPLICIT_TOPICS = [
 def subscribe_response() -> list[dict[str, str]]:
     """Return Dapr programmatic subscription declarations."""
     if os.environ.get("SUBSCRIBE_MODE", "wildcard").lower() == "explicit":
-        return [
+        subscriptions = [
             {"pubsubname": SUBSCRIBE_PUBSUB, "topic": topic, "route": route}
             for topic, route in EXPLICIT_TOPICS
         ]
-
-    return [
+    else:
+        subscriptions = [
+            {
+                "pubsubname": SUBSCRIBE_PUBSUB,
+                "topic": SUBSCRIBE_TOPIC,
+                "route": SUBSCRIBE_ROUTE,
+            }
+        ]
+    subscriptions.append(
         {
-            "pubsubname": SUBSCRIBE_PUBSUB,
-            "topic": SUBSCRIBE_TOPIC,
-            "route": SUBSCRIBE_ROUTE,
+            "pubsubname": LIFECYCLE_REPLY_PUBSUB,
+            "topic": LIFECYCLE_REPLY_TOPIC,
+            "route": LIFECYCLE_REPLY_ROUTE,
         }
-    ]
+    )
+    return subscriptions
 
 
 def known_event_routes() -> set[str]:
-    routes = {SUBSCRIBE_ROUTE}
+    routes = {SUBSCRIBE_ROUTE, LIFECYCLE_REPLY_ROUTE}
     routes.update(route for _, route in EXPLICIT_TOPICS)
     return routes
 
@@ -63,9 +74,7 @@ def handle_event(body: bytes, topic: str | None = None) -> dict[str, Any]:
         # and preserve the EXACT original bytes in dead_letter so the producer's
         # true input stays recoverable (jsonb cannot hold the NUL itself).
         stats.incr("sanitized")
-        logger.warning(
-            "stripped NUL before insert: event %s topic=%s", clean.get("id"), topic
-        )
+        logger.warning("stripped NUL before insert: event %s topic=%s", clean.get("id"), topic)
         record_dead_letter(body, reason="nul-sanitized", topic=topic, event_id=clean.get("id"))
     stats.incr("inserted" if inserted else "duplicate")
     return {"status": "SUCCESS", "inserted": inserted}

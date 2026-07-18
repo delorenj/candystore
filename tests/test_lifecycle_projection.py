@@ -1,0 +1,317 @@
+from __future__ import annotations
+
+import http.client
+import json
+import threading
+import uuid
+from datetime import UTC, datetime
+from http.server import ThreadingHTTPServer
+from pathlib import Path
+
+import pytest
+
+from candystore.db import cursor, insert_event
+from candystore.lifecycle import get_lifecycle_projection
+from candystore.main import Handler
+
+LIFECYCLE_ID = "11111111-1111-4111-8111-111111111111"
+CORRELATION_ID = "22222222-2222-4222-8222-222222222222"
+CAUSATION_ID = "33333333-3333-4333-8333-333333333333"
+COMMAND_ID = "44444444-4444-4444-8444-444444444444"
+COMMAND_EVENT_ID = "55555555-5555-4555-8555-555555555555"
+
+
+def test_snapshot_projection_is_replay_safe_and_version_ordered(db):
+    current = snapshot(version=2, sequence=4, status="active")
+    assert insert_event(current) is True
+    assert insert_event(current) is False
+
+    older = snapshot(version=1, sequence=2, status="planned")
+    assert insert_event(older) is True
+
+    result = get_lifecycle_projection(
+        LIFECYCLE_ID,
+        as_of=datetime(2026, 7, 18, 12, 5, tzinfo=UTC),
+    )
+    assert result["state_version"] == 2
+    assert result["status"] == "active"
+    assert result["authority_state"]["health"] == "nominal"
+    assert result["provenance"]["authority"] == "delorenj/lifecycle"
+    assert result["source"]["event_id"] == current["id"]
+
+    with cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) FROM lifecycle_projection_receipts WHERE lifecycle_id = %s",
+            (LIFECYCLE_ID,),
+        )
+        assert cur.fetchone()[0] == 2
+        cur.execute("SELECT COUNT(*) FROM lifecycle_projections")
+        assert cur.fetchone()[0] == 1
+
+
+def test_same_version_only_accepts_later_publication_sequence(db):
+    first = snapshot(version=3, sequence=6, phase="build")
+    assert insert_event(first)
+    later = snapshot(version=3, sequence=8, phase="verify")
+    assert insert_event(later)
+    delayed = snapshot(version=3, sequence=7, phase="delayed")
+    assert insert_event(delayed)
+
+    result = get_lifecycle_projection(
+        LIFECYCLE_ID,
+        as_of=datetime(2026, 7, 18, 12, 5, tzinfo=UTC),
+    )
+    assert result["phase"] == "verify"
+    assert result["publication"]["event_sequence"] == 8
+
+
+def test_freshness_and_missing_projection_never_render_healthy_empty(db):
+    assert insert_event(snapshot(version=1, sequence=2))
+
+    fresh = get_lifecycle_projection(
+        LIFECYCLE_ID,
+        as_of=datetime(2026, 7, 18, 12, 9, tzinfo=UTC),
+    )
+    assert fresh["projection_status"] == "current"
+    assert fresh["health"] == "nominal"
+    assert fresh["freshness"]["status"] == "fresh"
+
+    stale = get_lifecycle_projection(
+        LIFECYCLE_ID,
+        as_of=datetime(2026, 7, 18, 12, 11, tzinfo=UTC),
+    )
+    assert stale["projection_status"] == "stale"
+    assert stale["health"] == "degraded"
+    assert stale["authority_state"]["health"] == "nominal"
+    assert stale["freshness"]["status"] == "stale"
+
+    missing = get_lifecycle_projection(
+        "missing-lifecycle",
+        as_of=datetime(2026, 7, 18, 12, tzinfo=UTC),
+    )
+    assert missing["projection_status"] == "missing"
+    assert missing["status"] == "unknown"
+    assert missing["health"] == "degraded"
+    assert missing["authority_state"] is None
+
+
+def test_stable_command_verdicts_are_projected_without_state_mutation(db):
+    assert insert_event(snapshot(version=1, sequence=2))
+    assert insert_event(reply(verdict="stale", observed=1))
+    assert insert_event(reply(verdict="stale", observed=1)) is False
+
+    result = get_lifecycle_projection(LIFECYCLE_ID)
+    assert result["state_version"] == 1
+    assert len(result["command_verdicts"]) == 1
+    verdict = result["command_verdicts"][0]
+    assert verdict["verdict"] == "stale"
+    assert verdict["mutated"] is False
+    assert verdict["reason_code"] == "EXPECTED_STATE_VERSION_MISMATCH"
+    assert verdict["command_id"] == COMMAND_ID
+
+
+def test_projection_failure_rolls_back_append_and_receipt(db):
+    invalid = snapshot(version=1, sequence=2)
+    del invalid["data"]["provenance"]
+
+    with pytest.raises(ValueError, match="provenance"):
+        insert_event(invalid)
+
+    with cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM events WHERE id = %s", (invalid["id"],))
+        assert cur.fetchone()[0] == 0
+        cur.execute(
+            "SELECT COUNT(*) FROM lifecycle_projection_receipts WHERE event_id = %s",
+            (invalid["id"],),
+        )
+        assert cur.fetchone()[0] == 0
+
+
+def test_http_surface_is_read_only_and_explicit_for_unknown(db):
+    assert insert_event(snapshot(version=1, sequence=2))
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    try:
+        status, body = request(
+            host,
+            port,
+            "GET",
+            f"/lifecycles/{LIFECYCLE_ID}?as_of=2026-07-18T12:05:00Z",
+        )
+        assert status == 200
+        assert body["state_version"] == 1
+        assert body["source"]["ordering_key"] == LIFECYCLE_ID
+
+        status, body = request(host, port, "GET", "/lifecycles/not-observed")
+        assert status == 200
+        assert body["projection_status"] == "missing"
+
+        status, body = request(
+            host,
+            port,
+            "POST",
+            f"/lifecycles/{LIFECYCLE_ID}/actions",
+            {"intent": "transition"},
+        )
+        assert status == 404
+        assert body is None
+    finally:
+        server.shutdown()
+        thread.join(timeout=3)
+
+
+def test_reply_component_is_durable_jetstream_consumer():
+    component = (
+        Path(__file__).resolve().parents[1] / "dapr-components" / "lifecycle-replies.yaml"
+    ).read_text(encoding="utf-8")
+    assert 'streamName\n      value: "BLOODBANK_COMMANDS"' in component
+    assert 'durableName\n      value: "candystore-lifecycle-replies"' in component
+    assert 'deliverPolicy\n      value: "all"' in component
+
+
+def snapshot(
+    *,
+    version: int,
+    sequence: int,
+    status: str = "planned",
+    phase: str | None = "plan",
+) -> dict:
+    event_id = str(uuid.uuid4())
+    previous = None if version == 1 else version - 1
+    return {
+        "specversion": "1.0",
+        "id": event_id,
+        "source": "urn:33god:lifecycle:test",
+        "type": "bloodbank.v1.lifecycle.snapshot.updated",
+        "subject": "bloodbank.evt.v1.lifecycle.snapshot.updated",
+        "time": "2026-07-18T12:00:00Z",
+        "datacontenttype": "application/json",
+        "dataschema": ("apicurio://holyfields/bloodbank.v1.lifecycle.snapshot.updated/versions/1"),
+        "correlationid": CORRELATION_ID,
+        "causationid": CAUSATION_ID,
+        "producer": "lifecycle",
+        "service": "lifecycle",
+        "kind": "event",
+        "domain": "lifecycle",
+        "schemaref": "bloodbank.v1.lifecycle.snapshot.updated.v1",
+        "ordering_key": LIFECYCLE_ID,
+        "actor": {"actor_id": "lifecycle-authority", "actor_type": "service"},
+        "data": {
+            "contract_version": 1,
+            "lifecycle_id": LIFECYCLE_ID,
+            "repo": "delorenj/33GOD",
+            "spec_version": 1,
+            "state_version": version,
+            "previous_state_version": previous,
+            "state": {
+                "status": status,
+                "health": "nominal",
+                "phase": phase,
+                "progress_percent": 25,
+            },
+            "legal_frontier": [
+                {
+                    "id": f"transition:{status}:active",
+                    "kind": "state_transition",
+                    "action": "transition",
+                    "allowed": True,
+                    "capability_required": "lifecycle.intent.submit",
+                    "reason_code": "LEGAL_TRANSITION",
+                    "expected_state_version": version,
+                }
+            ],
+            "obligations": [],
+            "blockers": [],
+            "gates": [],
+            "capabilities": [
+                {
+                    "capability_id": "momo-lifecycle",
+                    "capability_version": 1,
+                    "actor_id": "momo",
+                    "scope": f"lifecycle:{LIFECYCLE_ID}",
+                    "actions": ["lifecycle.intent.submit"],
+                    "issued_at": "2026-07-18T11:00:00Z",
+                    "expires_at": None,
+                    "state_version": version,
+                }
+            ],
+            "provenance": {
+                "authority": "delorenj/lifecycle",
+                "authority_instance": "test-authority",
+                "reconciliation_id": str(uuid.uuid4()),
+                "policy_version": "1.0.0",
+                "source_observation_ids": [],
+            },
+            "freshness": {
+                "observed_through": "2026-07-18T12:00:00Z",
+                "evaluated_at": "2026-07-18T12:00:00Z",
+                "status": "fresh",
+                "max_age_seconds": 600,
+            },
+            "publication": {
+                "outbox_id": sequence,
+                "aggregate_id": LIFECYCLE_ID,
+                "aggregate_version": version,
+                "event_sequence": sequence,
+            },
+        },
+    }
+
+
+def reply(*, verdict: str, observed: int) -> dict:
+    return {
+        "specversion": "1.0",
+        "id": "66666666-6666-4666-8666-666666666666",
+        "source": "urn:33god:lifecycle:test",
+        "type": "bloodbank.v1.lifecycle.intent.submit",
+        "subject": "bloodbank.rpy.v1.lifecycle.intent.submit",
+        "time": "2026-07-18T12:01:00Z",
+        "datacontenttype": "application/json",
+        "dataschema": (
+            "apicurio://holyfields/bloodbank.v1.lifecycle.intent.submit.reply/versions/1"
+        ),
+        "correlationid": CORRELATION_ID,
+        "causationid": COMMAND_EVENT_ID,
+        "producer": "lifecycle",
+        "service": "lifecycle",
+        "kind": "reply",
+        "domain": "lifecycle",
+        "schemaref": "bloodbank.v1.lifecycle.intent.submit.reply.v1",
+        "actor": {"actor_id": "lifecycle-authority", "actor_type": "service"},
+        "data": {
+            "contract_version": 1,
+            "lifecycle_id": LIFECYCLE_ID,
+            "repo": "delorenj/33GOD",
+            "reply_to_command_event_id": COMMAND_EVENT_ID,
+            "command_id": COMMAND_ID,
+            "idempotency_key": "momo:independent-review:1",
+            "expected_state_version": 2,
+            "observed_state_version": observed,
+            "verdict": verdict,
+            "mutated": False,
+            "resulting_state_version": None,
+            "applied_event_id": None,
+            "capability_id": None,
+            "reason_code": "EXPECTED_STATE_VERSION_MISMATCH",
+            "responded_at": "2026-07-18T12:01:00Z",
+        },
+    }
+
+
+def request(
+    host: str,
+    port: int,
+    method: str,
+    path: str,
+    payload: dict | None = None,
+):
+    conn = http.client.HTTPConnection(host, port, timeout=5)
+    body = json.dumps(payload).encode("utf-8") if payload is not None else None
+    headers = {"Content-Type": "application/json"} if body else {}
+    conn.request(method, path, body=body, headers=headers)
+    response = conn.getresponse()
+    raw = response.read()
+    conn.close()
+    return response.status, json.loads(raw.decode("utf-8")) if raw else None

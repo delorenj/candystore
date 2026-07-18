@@ -13,7 +13,12 @@ def test_subscribe_response_defaults_to_wildcard(monkeypatch):
             "pubsubname": "bloodbank-pubsub",
             "topic": "bloodbank.evt.v1.>",
             "route": "/events/all",
-        }
+        },
+        {
+            "pubsubname": "bloodbank-command-results",
+            "topic": "bloodbank.rpy.v1.lifecycle.intent.submit",
+            "route": "/events/lifecycle_intent_reply",
+        },
     ]
 
 
@@ -23,7 +28,7 @@ def test_subscribe_response_can_enumerate_explicit_topics(monkeypatch):
     routes = ingest.subscribe_response()
 
     assert routes
-    assert all(route["pubsubname"] == "bloodbank-pubsub" for route in routes)
+    assert any(route["pubsubname"] == "bloodbank-pubsub" for route in routes)
     assert {route["route"] for route in routes} <= ingest.known_event_routes()
 
 

@@ -17,6 +17,7 @@ import psycopg2
 from candystore import stats
 from candystore.db import check_connection, init_schema, record_dead_letter
 from candystore.ingest import handle_event, known_event_routes, subscribe_response
+from candystore.lifecycle import get_lifecycle_projection, list_lifecycle_projections
 from candystore.query import (
     by_cli,
     by_project,
@@ -87,6 +88,36 @@ class Handler(BaseHTTPRequestHandler):
             )
             self._send_json(200, result)
             return
+
+        if path == "/lifecycles":
+            qs = parse_qs(parsed.query)
+            try:
+                as_of = _parse_as_of(_first(qs, "as_of"))
+                result = list_lifecycle_projections(
+                    as_of=as_of,
+                    limit=int(_first(qs, "limit") or "100"),
+                    offset=int(_first(qs, "offset") or "0"),
+                )
+            except (ValueError, TypeError) as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
+            self._send_json(200, result)
+            return
+
+        if path.startswith("/lifecycles/"):
+            parts = [part for part in path.split("/") if part]
+            if len(parts) == 2:
+                qs = parse_qs(parsed.query)
+                try:
+                    as_of = _parse_as_of(_first(qs, "as_of"))
+                except ValueError as exc:
+                    self._send_json(400, {"error": str(exc)})
+                    return
+                self._send_json(
+                    200,
+                    get_lifecycle_projection(unquote(parts[1]), as_of=as_of),
+                )
+                return
 
         if path.startswith("/events/") and path.endswith("/summary"):
             event_id = path.split("/")[-2]
@@ -297,6 +328,15 @@ def main() -> int:
 def _first(qs: dict[str, list[str]], key: str) -> str | None:
     vals = qs.get(key)
     return vals[0] if vals else None
+
+
+def _parse_as_of(value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("as_of must be an RFC 3339 timestamp") from exc
 
 
 def _json_default(value: Any) -> str:

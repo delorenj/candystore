@@ -1,0 +1,22 @@
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: bloodbank-command-results
+spec:
+  type: pubsub.jetstream
+  version: v1
+  metadata:
+    - name: natsURL
+      value: "nats://nats:4222"
+    - name: name
+      value: "bloodbank-command-results"
+    - name: durableName
+      value: "candystore-lifecycle-replies"
+    - name: queueGroupName
+      value: "candystore-lifecycle-replies"
+    - name: streamName
+      value: "BLOODBANK_COMMANDS"
+    - name: deliverPolicy
+      value: "all"
+    - name: ackWait
+      value: "30s"
