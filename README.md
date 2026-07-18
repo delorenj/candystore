@@ -5,8 +5,9 @@ CloudEvents from Dapr pub/sub, stores the full envelope in PostgreSQL, exposes
 query and summary APIs, and serves a React UI from the same Python process.
 
 Candystore also maintains a replay-safe, version-ordered **read projection** of
-authoritative Lifecycle snapshot events and stable command replies. Lifecycle
-remains the sole writer of operational lifecycle truth; Candystore exposes no
+authoritative Lifecycle v2 snapshot events and stable command replies. The
+projection preserves the authority-owned `capability_version` on every grant.
+Lifecycle remains the sole writer of operational lifecycle truth; Candystore exposes no
 Lifecycle mutation endpoint. Snapshot events are consumed from the durable
 `BLOODBANK_EVENTS` stream and replies from a dedicated durable consumer on
 `BLOODBANK_COMMANDS`, so restart catch-up does not depend on core subscriptions.
@@ -55,3 +56,10 @@ Missing Lifecycle projections return explicit `status=unknown`,
 `health=degraded`, and `projection_status=missing`. A projection whose
 authoritative freshness window has expired retains the original state under
 `authority_state` while its display health is degraded.
+
+Event insertion and projection share one PostgreSQL transaction. After an
+insert attempt, including an ID conflict, Candystore locks and projects the
+canonical `events.raw` row already stored for that ID. It never applies the
+conflicting incoming body. A projection error aborts a new audit insert and its
+receipt together; for a pre-existing audit row it leaves that row unchanged and
+commits no receipt, so durable redelivery retries the same canonical body.

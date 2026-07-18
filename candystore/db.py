@@ -123,7 +123,14 @@ def insert_event(envelope: dict[str, Any], sanitized: bool = False) -> bool:
         # particular domain at import time.
         from candystore.lifecycle import project_lifecycle_envelope
 
-        project_lifecycle_envelope(cur, envelope)
+        # Always project the immutable row Candystore actually accepted. On a
+        # duplicate, the incoming body may conflict with the canonical event;
+        # it must never influence a previously unprojected read model.
+        cur.execute("SELECT raw FROM events WHERE id = %s FOR SHARE", (params[0],))
+        canonical_row = cur.fetchone()
+        if canonical_row is None or not isinstance(canonical_row[0], dict):
+            raise RuntimeError("canonical events.raw row is unavailable for projection")
+        project_lifecycle_envelope(cur, canonical_row[0])
         return inserted
 
 

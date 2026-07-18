@@ -4,6 +4,7 @@ import http.client
 import json
 import threading
 import uuid
+from copy import deepcopy
 from datetime import UTC, datetime
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -13,6 +14,7 @@ import pytest
 from candystore.db import cursor, insert_event
 from candystore.lifecycle import get_lifecycle_projection
 from candystore.main import Handler
+from tests.schema_validation import validate_with_bloodbank
 
 LIFECYCLE_ID = "11111111-1111-4111-8111-111111111111"
 CORRELATION_ID = "22222222-2222-4222-8222-222222222222"
@@ -38,6 +40,7 @@ def test_snapshot_projection_is_replay_safe_and_version_ordered(db):
     assert result["authority_state"]["health"] == "nominal"
     assert result["provenance"]["authority"] == "delorenj/lifecycle"
     assert result["source"]["event_id"] == current["id"]
+    assert result["capabilities"][0]["capability_version"] == 7
 
     with cursor() as cur:
         cur.execute(
@@ -110,7 +113,7 @@ def test_stable_command_verdicts_are_projected_without_state_mutation(db):
     assert verdict["command_id"] == COMMAND_ID
 
 
-def test_projection_failure_rolls_back_append_and_receipt(db):
+def test_projection_failure_aborts_append_and_receipt_atomically(db):
     invalid = snapshot(version=1, sequence=2)
     del invalid["data"]["provenance"]
 
@@ -125,6 +128,51 @@ def test_projection_failure_rolls_back_append_and_receipt(db):
             (invalid["id"],),
         )
         assert cur.fetchone()[0] == 0
+
+
+def test_conflicting_duplicate_projects_only_the_canonical_persisted_raw_row(db):
+    canonical = snapshot(version=1, sequence=2, status="planned", phase="plan")
+    assert insert_event(canonical) is True
+
+    # Simulate an event persisted before the projection migration/catch-up.
+    with cursor() as cur:
+        cur.execute("DELETE FROM lifecycle_projections WHERE lifecycle_id = %s", (LIFECYCLE_ID,))
+        cur.execute(
+            "DELETE FROM lifecycle_projection_receipts WHERE event_id = %s",
+            (canonical["id"],),
+        )
+
+    conflicting = deepcopy(canonical)
+    conflicting["data"]["state_version"] = 99
+    conflicting["data"]["previous_state_version"] = 98
+    conflicting["data"]["state"]["status"] = "completed"
+    conflicting["data"]["state"]["phase"] = "spoofed"
+    conflicting["data"]["capabilities"][0]["capability_version"] = 999
+    conflicting["data"]["publication"]["aggregate_version"] = 99
+    conflicting["data"]["publication"]["event_sequence"] = 999
+
+    assert insert_event(conflicting) is False
+    result = get_lifecycle_projection(
+        LIFECYCLE_ID,
+        as_of=datetime(2026, 7, 18, 12, 5, tzinfo=UTC),
+    )
+    assert result["state_version"] == 1
+    assert result["status"] == "planned"
+    assert result["phase"] == "plan"
+    assert result["capabilities"][0]["capability_version"] == 7
+    assert result["publication"]["event_sequence"] == 2
+    assert result["source"]["event_id"] == canonical["id"]
+
+    with cursor() as cur:
+        cur.execute("SELECT raw FROM events WHERE id = %s", (canonical["id"],))
+        assert cur.fetchone()[0] == canonical
+        cur.execute("SELECT COUNT(*) FROM events WHERE id = %s", (canonical["id"],))
+        assert cur.fetchone()[0] == 1
+        cur.execute(
+            "SELECT COUNT(*) FROM lifecycle_projection_receipts WHERE event_id = %s",
+            (canonical["id"],),
+        )
+        assert cur.fetchone()[0] == 1
 
 
 def test_http_surface_is_read_only_and_explicit_for_unknown(db):
@@ -142,7 +190,7 @@ def test_http_surface_is_read_only_and_explicit_for_unknown(db):
         )
         assert status == 200
         assert body["state_version"] == 1
-        assert body["source"]["ordering_key"] == LIFECYCLE_ID
+        assert body["source"]["ordering_key"] == f"lifecycle:{LIFECYCLE_ID}"
 
         status, body = request(host, port, "GET", "/lifecycles/not-observed")
         assert status == 200
@@ -171,6 +219,11 @@ def test_reply_component_is_durable_jetstream_consumer():
     assert 'deliverPolicy\n      value: "all"' in component
 
 
+def test_lifecycle_projection_fixtures_match_exact_local_bloodbank_schemas():
+    validate_with_bloodbank(snapshot(version=2, sequence=4, status="active"))
+    validate_with_bloodbank(reply(verdict="stale", observed=2))
+
+
 def snapshot(
     *,
     version: int,
@@ -180,26 +233,31 @@ def snapshot(
 ) -> dict:
     event_id = str(uuid.uuid4())
     previous = None if version == 1 else version - 1
+    target = "active" if status == "planned" else "waiting"
     return {
         "specversion": "1.0",
         "id": event_id,
-        "source": "urn:33god:lifecycle:test",
+        "source": "urn:33god:service:lifecycle",
         "type": "bloodbank.v1.lifecycle.snapshot.updated",
         "subject": "bloodbank.evt.v1.lifecycle.snapshot.updated",
         "time": "2026-07-18T12:00:00Z",
         "datacontenttype": "application/json",
-        "dataschema": ("apicurio://holyfields/bloodbank.v1.lifecycle.snapshot.updated/versions/1"),
+        "dataschema": ("apicurio://holyfields/bloodbank.v1.lifecycle.snapshot.updated/versions/2"),
         "correlationid": CORRELATION_ID,
         "causationid": CAUSATION_ID,
-        "producer": "lifecycle",
+        "producer": "delorenj/lifecycle",
         "service": "lifecycle",
         "kind": "event",
         "domain": "lifecycle",
-        "schemaref": "bloodbank.v1.lifecycle.snapshot.updated.v1",
-        "ordering_key": LIFECYCLE_ID,
-        "actor": {"actor_id": "lifecycle-authority", "actor_type": "service"},
+        "schemaref": "bloodbank.v1.lifecycle.snapshot.updated.v2",
+        "ordering_key": f"lifecycle:{LIFECYCLE_ID}",
+        "actor": {
+            "type": "service",
+            "agent_id": "delorenj/lifecycle",
+            "instance": "test-authority",
+        },
         "data": {
-            "contract_version": 1,
+            "contract_version": 2,
             "lifecycle_id": LIFECYCLE_ID,
             "repo": "delorenj/33GOD",
             "spec_version": 1,
@@ -213,7 +271,7 @@ def snapshot(
             },
             "legal_frontier": [
                 {
-                    "id": f"transition:{status}:active",
+                    "id": f"transition:{status}:{target}",
                     "kind": "state_transition",
                     "action": "transition",
                     "allowed": True,
@@ -228,7 +286,7 @@ def snapshot(
             "capabilities": [
                 {
                     "capability_id": "momo-lifecycle",
-                    "capability_version": 1,
+                    "capability_version": 7,
                     "actor_id": "momo",
                     "scope": f"lifecycle:{LIFECYCLE_ID}",
                     "actions": ["lifecycle.intent.submit"],
@@ -264,7 +322,7 @@ def reply(*, verdict: str, observed: int) -> dict:
     return {
         "specversion": "1.0",
         "id": "66666666-6666-4666-8666-666666666666",
-        "source": "urn:33god:lifecycle:test",
+        "source": "urn:33god:service:lifecycle",
         "type": "bloodbank.v1.lifecycle.intent.submit",
         "subject": "bloodbank.rpy.v1.lifecycle.intent.submit",
         "time": "2026-07-18T12:01:00Z",
@@ -274,12 +332,16 @@ def reply(*, verdict: str, observed: int) -> dict:
         ),
         "correlationid": CORRELATION_ID,
         "causationid": COMMAND_EVENT_ID,
-        "producer": "lifecycle",
+        "producer": "delorenj/lifecycle",
         "service": "lifecycle",
         "kind": "reply",
         "domain": "lifecycle",
         "schemaref": "bloodbank.v1.lifecycle.intent.submit.reply.v1",
-        "actor": {"actor_id": "lifecycle-authority", "actor_type": "service"},
+        "actor": {
+            "type": "service",
+            "agent_id": "delorenj/lifecycle",
+            "instance": "test-authority",
+        },
         "data": {
             "contract_version": 1,
             "lifecycle_id": LIFECYCLE_ID,

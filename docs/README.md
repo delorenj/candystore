@@ -12,13 +12,23 @@ Bloodbank lifecycle events. In the same database transaction as event
 persistence it applies replay-safe projection logic backed by migration
 `003_lifecycle_projection.sql`.
 
+Every projection attempt reads the accepted envelope back from `events.raw`
+under a PostgreSQL share lock. When an event ID is a duplicate, the existing
+append-only row—not the incoming body—is the only projection input. This also
+handles events that predate the projection migration: successful projection
+adds its receipt atomically; a projection error commits no new receipt or read
+model change, and durable redelivery retries the unchanged canonical row. For a
+new event, audit insertion, receipt, and projection either commit together or
+abort together.
+
 The read model retains:
 
 - lifecycle and project identity;
 - `spec_version` and `state_version`;
 - status, health, phase, and deterministic fingerprint when present;
 - source observation, provenance, freshness, and as-of time;
-- legal frontier, obligations, blockers, and gates; and
+- legal frontier, obligations, blockers, and gates;
+- authority-owned capability IDs and `capability_version`; and
 - stable Lifecycle command verdicts.
 
 Duplicate receipts are idempotent and older state versions cannot replace a
