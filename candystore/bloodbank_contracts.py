@@ -43,6 +43,10 @@ class AuthorityContractError(ValueError):
     """A candidate publication cannot authorize a Lifecycle projection."""
 
 
+class SchemaRegistryError(RuntimeError):
+    """The canonical Bloodbank schema registry is operationally unavailable."""
+
+
 def validate_projection_candidate(envelope: dict[str, Any]) -> ProjectionKind | None:
     """Return the projection kind after exact schema and authority validation.
 
@@ -58,16 +62,19 @@ def validate_projection_candidate(envelope: dict[str, Any]) -> ProjectionKind | 
         SNAPSHOT_SCHEMA_PATH if projection_kind == "snapshot" else INTENT_REPLY_SCHEMA_PATH
     )
     try:
-        _validator(schema_path).validate(envelope)
+        validator = _validator(schema_path)
+        validator.validate(envelope)
     except ValidationError as exc:
         location = ".".join(str(part) for part in exc.absolute_path) or "envelope"
         raise AuthorityContractError(
             f"canonical Bloodbank {projection_kind} schema rejected {location} "
             f"({exc.validator} constraint)"
         ) from exc
-    except (OSError, ValueError, KeyError) as exc:
-        raise AuthorityContractError(
-            f"canonical Bloodbank {projection_kind} schema could not be loaded"
+    except SchemaRegistryError:
+        raise
+    except Exception as exc:
+        raise SchemaRegistryError(
+            f"canonical Bloodbank {projection_kind} schema registry failed during validation"
         ) from exc
 
     _validate_authority_identity(envelope)
@@ -80,6 +87,14 @@ def validate_projection_candidate(envelope: dict[str, Any]) -> ProjectionKind | 
         provenance = _object(data.get("provenance"), "data.provenance")
         if provenance.get("authority") != AUTHORITY_PRODUCER:
             raise AuthorityContractError("snapshot provenance authority is not Lifecycle")
+        actor = _object(envelope.get("actor"), "actor")
+        if _text(actor.get("instance"), "actor.instance") != _text(
+            provenance.get("authority_instance"),
+            "data.provenance.authority_instance",
+        ):
+            raise AuthorityContractError(
+                "snapshot actor instance does not match provenance authority_instance"
+            )
         publication = _object(data.get("publication"), "data.publication")
         if publication.get("aggregate_id") != lifecycle_id:
             raise AuthorityContractError("snapshot publication aggregate_id does not match")
@@ -137,18 +152,34 @@ def _validate_authority_identity(envelope: dict[str, Any]) -> None:
 
 @lru_cache(maxsize=4)
 def _validator(relative_path: str) -> Draft202012Validator:
-    schemas_root = _schemas_root()
-    registry = Registry()
-    for path in schemas_root.rglob("*.json"):
-        document = json.loads(path.read_text(encoding="utf-8"))
-        if "$id" in document:
-            registry = registry.with_resource(document["$id"], Resource.from_contents(document))
-    schema = json.loads((schemas_root / relative_path).read_text(encoding="utf-8"))
-    return Draft202012Validator(
-        schema,
-        registry=registry,
-        format_checker=FormatChecker(),
-    )
+    try:
+        schemas_root = _schemas_root()
+        registry = Registry()
+        for path in schemas_root.rglob("*.json"):
+            document = json.loads(path.read_text(encoding="utf-8"))
+            if "$id" in document:
+                registry = registry.with_resource(document["$id"], Resource.from_contents(document))
+        schema = json.loads((schemas_root / relative_path).read_text(encoding="utf-8"))
+        Draft202012Validator.check_schema(schema)
+        return Draft202012Validator(
+            schema,
+            registry=registry,
+            format_checker=FormatChecker(),
+        )
+    except SchemaRegistryError:
+        raise
+    except Exception as exc:
+        raise SchemaRegistryError(
+            f"canonical Bloodbank schema registry could not load {relative_path}"
+        ) from exc
+
+
+def check_projection_registry() -> bool:
+    """Load every Lifecycle projection schema used by the running service."""
+
+    _validator(SNAPSHOT_SCHEMA_PATH)
+    _validator(INTENT_REPLY_SCHEMA_PATH)
+    return True
 
 
 def _schemas_root() -> Path:
@@ -159,7 +190,7 @@ def _schemas_root() -> Path:
         else Path(__file__).resolve().parents[2] / "bloodbank" / "schemas"
     )
     if not root.is_dir():
-        raise AuthorityContractError(
+        raise SchemaRegistryError(
             "canonical Bloodbank schema tree unavailable; set BLOODBANK_SCHEMAS_DIR"
         )
     return root

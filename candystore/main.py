@@ -15,6 +15,7 @@ from uuid import UUID
 import psycopg2
 
 from candystore import stats
+from candystore.bloodbank_contracts import check_projection_registry
 from candystore.db import check_connection, init_schema, record_dead_letter
 from candystore.ingest import handle_event, known_event_routes, subscribe_response
 from candystore.lifecycle import get_lifecycle_projection, list_lifecycle_projections
@@ -63,7 +64,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/readyz":
             try:
-                ok = check_connection()
+                ok = check_connection() and check_projection_registry()
             except Exception as exc:
                 self._send_json(503, {"ready": False, "error": str(exc)})
                 return

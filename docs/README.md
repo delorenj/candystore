@@ -32,6 +32,11 @@ as evidence but is excluded from projections and verdicts. This intentional
 contract rejection is distinct from an operational database failure: the
 latter still rolls the transaction back, while a pre-existing canonical audit
 row remains retryable without accepting a conflicting duplicate body.
+An unavailable, unreadable, corrupt, or unresolvable Bloodbank schema tree is
+classified as an operational registry failure. It is never converted into an
+audit-only payload rejection: the transaction rolls back, Dapr receives a
+retryable 500 response, and readiness stays false. Payload/schema violations
+from an available registry remain audit-only and receive no projection receipt.
 
 The read model retains:
 

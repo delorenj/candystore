@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+from candystore import bloodbank_contracts
+from candystore.bloodbank_contracts import SchemaRegistryError
 from candystore.db import cursor, insert_event
 from candystore.lifecycle import get_lifecycle_projection
 from candystore.main import Handler
@@ -164,6 +166,58 @@ def test_operational_projection_failure_rolls_back_audit_and_receipt(db, monkeyp
         assert cur.fetchone()[0] == 0
 
 
+@pytest.mark.parametrize("registry_state", ["missing", "corrupt"])
+def test_schema_registry_unavailability_is_operational_not_candidate_rejection(
+    monkeypatch,
+    tmp_path,
+    registry_state,
+):
+    registry = tmp_path / "schemas"
+    if registry_state == "corrupt":
+        registry.mkdir()
+        (registry / "broken.json").write_text("{not-json", encoding="utf-8")
+    monkeypatch.setenv("BLOODBANK_SCHEMAS_DIR", str(registry))
+    bloodbank_contracts._validator.cache_clear()
+    try:
+        with pytest.raises(SchemaRegistryError, match="schema"):
+            bloodbank_contracts.validate_projection_candidate(snapshot(version=1, sequence=2))
+    finally:
+        bloodbank_contracts._validator.cache_clear()
+
+
+def test_schema_registry_outage_rolls_back_new_audit_and_returns_dapr_retry(
+    db,
+    monkeypatch,
+    tmp_path,
+):
+    registry = tmp_path / "missing-schemas"
+    monkeypatch.setenv("BLOODBANK_SCHEMAS_DIR", str(registry))
+    bloodbank_contracts._validator.cache_clear()
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    candidate = snapshot(version=1, sequence=2)
+    try:
+        status, body = request(host, port, "POST", "/events/all", candidate)
+        assert status == 500
+        assert body["status"] == "RETRY"
+        assert "schema" in body["error"]
+    finally:
+        server.shutdown()
+        thread.join(timeout=3)
+        bloodbank_contracts._validator.cache_clear()
+
+    with cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM events WHERE id = %s", (candidate["id"],))
+        assert cur.fetchone()[0] == 0
+        cur.execute(
+            "SELECT COUNT(*) FROM lifecycle_projection_receipts WHERE event_id = %s",
+            (candidate["id"],),
+        )
+        assert cur.fetchone()[0] == 0
+
+
 def test_preexisting_audit_row_survives_projection_failure_and_retries_canonically(db, monkeypatch):
     canonical = snapshot(version=1, sequence=2)
     assert insert_event(canonical)
@@ -196,6 +250,58 @@ def test_preexisting_audit_row_survives_projection_failure_and_retries_canonical
     result = get_lifecycle_projection(LIFECYCLE_ID)
     assert result["source"]["event_id"] == canonical["id"]
     assert result["state_version"] == 1
+
+
+def test_preexisting_canonical_audit_row_remains_retryable_during_registry_outage(
+    db,
+    monkeypatch,
+    tmp_path,
+):
+    canonical = snapshot(version=1, sequence=2)
+    assert insert_event(canonical)
+    with cursor() as cur:
+        cur.execute("DELETE FROM lifecycle_projections WHERE lifecycle_id = %s", (LIFECYCLE_ID,))
+        cur.execute(
+            "DELETE FROM lifecycle_projection_receipts WHERE event_id = %s",
+            (canonical["id"],),
+        )
+
+    with monkeypatch.context() as scoped:
+        scoped.setenv("BLOODBANK_SCHEMAS_DIR", str(tmp_path / "missing-schemas"))
+        bloodbank_contracts._validator.cache_clear()
+        with pytest.raises(SchemaRegistryError):
+            insert_event(canonical)
+    bloodbank_contracts._validator.cache_clear()
+
+    with cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM events WHERE id = %s", (canonical["id"],))
+        assert cur.fetchone()[0] == 1
+        cur.execute(
+            "SELECT COUNT(*) FROM lifecycle_projection_receipts WHERE event_id = %s",
+            (canonical["id"],),
+        )
+        assert cur.fetchone()[0] == 0
+
+    assert insert_event(canonical) is False
+    assert get_lifecycle_projection(LIFECYCLE_ID)["source"]["event_id"] == canonical["id"]
+
+
+def test_snapshot_actor_instance_must_match_authority_provenance(db):
+    candidate = snapshot(version=1, sequence=2)
+    candidate["actor"]["instance"] = "other-authority"
+
+    assert insert_event(candidate)
+
+    with cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM events WHERE id = %s", (candidate["id"],))
+        assert cur.fetchone()[0] == 1
+        cur.execute(
+            "SELECT COUNT(*) FROM lifecycle_projection_receipts WHERE event_id = %s",
+            (candidate["id"],),
+        )
+        assert cur.fetchone()[0] == 0
+        cur.execute("SELECT COUNT(*) FROM lifecycle_projections")
+        assert cur.fetchone()[0] == 0
 
 
 def test_spoofed_snapshot_is_audited_but_cannot_create_or_replace_projection(db):

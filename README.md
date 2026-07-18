@@ -71,3 +71,9 @@ in append-only audit history but is excluded from the read model and receives
 no receipt. An operational projection error aborts a new audit insert and its
 receipt together; for a pre-existing audit row it leaves that row unchanged and
 commits no receipt, so durable redelivery retries the same canonical body.
+Failure to locate, read, parse, or resolve the mounted Bloodbank schema tree is
+an operational registry outage, not an invalid-candidate verdict: the ingest
+transaction rolls back, the Dapr route returns `500 RETRY`, and `/readyz`
+remains unavailable until the exact registry can be loaded. Schema-valid
+snapshot provenance also binds the Lifecycle actor instance to
+`provenance.authority_instance` before projection.

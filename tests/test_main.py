@@ -5,6 +5,7 @@ import json
 import threading
 from http.server import ThreadingHTTPServer
 
+from candystore.bloodbank_contracts import SchemaRegistryError
 from candystore.main import Handler
 
 
@@ -39,6 +40,26 @@ def test_http_ingest_and_query(db, sample_event):
         status, body = request(host, port, "GET", f"/sessions/{env['correlationid']}")
         assert status == 200
         assert len(body["events"]) == 1
+    finally:
+        server.shutdown()
+        thread.join(timeout=3)
+
+
+def test_readyz_fails_when_projection_schema_registry_is_unavailable(monkeypatch):
+    monkeypatch.setattr("candystore.main.check_connection", lambda: True)
+
+    def unavailable():
+        raise SchemaRegistryError("canonical schema registry unavailable")
+
+    monkeypatch.setattr("candystore.main.check_projection_registry", unavailable)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    try:
+        status, body = request(host, port, "GET", "/readyz")
+        assert status == 503
+        assert body == {"ready": False, "error": "canonical schema registry unavailable"}
     finally:
         server.shutdown()
         thread.join(timeout=3)
