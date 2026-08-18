@@ -11,7 +11,22 @@ from candystore.db import insert_event, record_dead_letter, sanitize_envelope
 logger = logging.getLogger("candystore.ingest")
 
 SUBSCRIBE_PUBSUB = os.environ.get("SUBSCRIBE_PUBSUB", "bloodbank-pubsub")
-SUBSCRIBE_TOPIC = os.environ.get("SUBSCRIBE_TOPIC", "bloodbank.evt.v1.>")
+# ONE wildcard covering every subject the BLOODBANK_EVENTS stream binds
+# (bloodbank/compose/nats/streams.json): `bloodbank.evt.v1.>` plus the v2
+# repo-maintenance action-failure extension.
+#
+# It must be one subject, not a list. A Dapr pubsub.jetstream component creates
+# a single consumer, and a JetStream consumer is tied to one filter subject, so
+# declaring two topics makes the second fail at startup with
+#   nats: subject does not match consumer
+# leaving it silently unsubscribed. `bloodbank.evt.v1.>` alone had exactly that
+# effect on the v2 subject: pr-crusher's action-phase failure -- its
+# highest-severity event -- reached the stream and was never projected here.
+#
+# Widening to `bloodbank.evt.>` adds no risk: a consumer only ever receives what
+# the stream already holds, and this projection is meant to be the store's
+# complete durable history.
+SUBSCRIBE_TOPIC = os.environ.get("SUBSCRIBE_TOPIC", "bloodbank.evt.>")
 SUBSCRIBE_ROUTE = os.environ.get("SUBSCRIBE_ROUTE", "/events/all")
 
 EXPLICIT_TOPICS = [
