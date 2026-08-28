@@ -18,7 +18,6 @@ honcho.json
 
 # Sandboxes (ephemeral execution environments)
 sandboxes/
-bloodbank-inbox/
 
 # Runtime logs and generated skill-curator backups are local noise.
 logs/**
