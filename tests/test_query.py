@@ -104,3 +104,57 @@ def test_scope_filter_uses_domain_and_entity_not_repo_slug(db, sample_event):
     # slugged type is still domain `repo`, so it belongs here.
     assert list_events(scope="repo", limit=10)["total"] == 3
     assert list_events(scope="decision", limit=10)["total"] == 0
+
+
+def test_session_summary_counts_post_migration_types(db, sample_event):
+    """End-to-end through the DB: get_session_summary() must see the
+    version-free four-token shape. Before the fix this session reported
+    turns/tools_requested/tools_invoked = 0 while the raw rows said 2/3/1,
+    because the lookups were hardcoded to `bloodbank.v1.tool.tool_call.*` --
+    a spelling that is both versioned AND uses the retired entity."""
+    session_id = "550e8400-e29b-41d4-a716-446655440333"
+    events = [
+        ("550e8400-e29b-41d4-a716-446655440100", "bloodbank.conversation.turn.started", "15:00"),
+        ("550e8400-e29b-41d4-a716-446655440101", "bloodbank.conversation.turn.started", "15:01"),
+        ("550e8400-e29b-41d4-a716-446655440102", "bloodbank.agent.tool.requested", "15:02"),
+        ("550e8400-e29b-41d4-a716-446655440103", "bloodbank.agent.tool.requested", "15:03"),
+        # The retired entity spelling folds into the same bucket.
+        ("550e8400-e29b-41d4-a716-446655440104", "bloodbank.v1.tool.tool_call.requested", "15:04"),
+        ("550e8400-e29b-41d4-a716-446655440105", "bloodbank.agent.tool.invoked", "15:05"),
+    ]
+    for event_id, event_type, hhmm in events:
+        assert (
+            insert_event(
+                sample_event(
+                    id=event_id,
+                    correlationid=session_id,
+                    time=f"2026-05-24T{hhmm}:00Z",
+                    type=event_type,
+                    data={"total_turns": None, "duration_seconds": None},
+                )
+            )
+            is True
+        )
+
+    # agent.session.ended supersedes cli.session.ended; the old probe only
+    # matched the latter, so data.total_turns never reached the summary.
+    assert (
+        insert_event(
+            sample_event(
+                id="550e8400-e29b-41d4-a716-446655440106",
+                correlationid=session_id,
+                time="2026-05-24T15:10:00Z",
+                type="bloodbank.agent.session.ended",
+                data={"total_turns": 42, "duration_seconds": 600},
+            )
+        )
+        is True
+    )
+
+    summary = get_session_summary(session_id)
+
+    assert summary["tools_requested"] == 3
+    assert summary["tools_invoked"] == 1
+    assert summary["turns"] == 42
+    assert summary["duration_seconds"] == 600
+    assert summary["events_count"] == 7

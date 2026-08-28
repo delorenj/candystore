@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from candystore.db import cursor
-from candystore.summarize import summarize
+from candystore.summarize import canonical_type, summarize
 
 # The `type` column holds two shapes forever: the historical five-token
 # `bloodbank.v1.<domain>.<entity>.<action>` on ~718k rows already in the table,
@@ -18,6 +18,36 @@ from candystore.summarize import summarize
 # Strip the prefix and its optional version first; then domain and entity sit
 # at positions 1 and 2 for both shapes.
 SCOPE_TYPE_EXPR = "regexp_replace(type, '^bloodbank\\.(v[0-9]+\\.)?', '')"
+
+# The session summary counts events by CANONICAL type. Two independent
+# normalizations are needed and `canonical_type()` (summarize.py) already does
+# both, so this module keys on its output instead of encoding the knowledge a
+# third time:
+#   1. the version token -- `bloodbank.v1.conversation.turn.started` and
+#      `bloodbank.conversation.turn.started` are the same event;
+#   2. the `tool.tool_call.* -> agent.tool.*` ENTITY rename, which survives
+#      version-stripping. The live table holds 29,341 v1.tool.tool_call.requested
+#      AND 332,443 agent.tool.requested rows across both shapes; counting only
+#      the v1 tool_call spelling reported 0 tools for every session recorded
+#      since the rename.
+TURN_STARTED_TYPE = "bloodbank.conversation.turn.started"
+TOOL_REQUESTED_TYPE = "bloodbank.agent.tool.requested"
+TOOL_INVOKED_TYPE = "bloodbank.agent.tool.invoked"
+
+# A session ends under EITHER spelling. `agent.session.ended` supersedes
+# `cli.session.ended` for agent CLIs (bloodbank/docs/event-naming.md) but both
+# schemas are live and both are in the corpus, so this is a two-member set, not
+# a rename. The old probe was `type.endswith("cli.session.ended")`, which found
+# the 592 v1.cli rows and missed all 4,980 agent.session.ended ones -- so for
+# every modern session the authoritative `data.total_turns` /
+# `data.duration_seconds` payload was never read. `audio.session.ended` is a
+# different domain and is deliberately not in here.
+SESSION_END_TYPES = frozenset(
+    {
+        "bloodbank.agent.session.ended",
+        "bloodbank.cli.session.ended",
+    }
+)
 
 PROJECT_EXPR = (
     "COALESCE(NULLIF(data->>'project', ''), "
@@ -130,32 +160,51 @@ def get_session_events(correlationid: str) -> list[dict[str, Any]]:
 
 
 def get_session_summary(correlationid: str) -> dict[str, Any]:
-    events = get_session_events(correlationid)
+    return session_summary(correlationid, get_session_events(correlationid))
+
+
+def session_summary(correlationid: str, events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Roll a session's timeline up into counts. Pure: no DB, so it is testable
+    without CANDYSTORE_TEST_DATABASE_URL (see tests/test_session_summary.py)."""
+    # `events_by_type` keeps the RAW spelling -- it is a report of what is
+    # literally in the table, and collapsing it would hide a producer still
+    # emitting a retired shape. Every derived COUNT below reads the canonical
+    # tally instead, so it sees both wire shapes as one event.
     event_types = Counter(event["type"] for event in events)
+    canonical_counts = Counter(canonical_type(event["type"]) for event in events)
+
     started_at = events[0]["time"] if events else None
     ended_at = events[-1]["time"] if events else None
     duration_seconds = _duration_seconds(started_at, ended_at)
     session_end = next(
-        (event for event in reversed(events) if event["type"].endswith("cli.session.ended")),
+        (event for event in reversed(events) if canonical_type(event["type"]) in SESSION_END_TYPES),
         None,
     )
     data = (session_end or {}).get("data") or {}
     actor = ((session_end or events[0])["actor"] if events else {}) or {}
 
+    # The session-end payload is authoritative when it is there, but a session
+    # still in flight (or one whose end event never landed) has no payload at
+    # all -- fall back to counting the timeline. `is None` rather than dict
+    # default: a present-but-null field must fall back too.
+    total_turns = data.get("total_turns")
+    if total_turns is None:
+        total_turns = canonical_counts.get(TURN_STARTED_TYPE, 0)
+    reported_duration = data.get("duration_seconds")
+    if reported_duration is None:
+        reported_duration = duration_seconds
+
     return {
         "session_id": correlationid,
         "started_at": started_at,
         "ended_at": ended_at,
-        "duration_seconds": data.get("duration_seconds", duration_seconds),
+        "duration_seconds": reported_duration,
         "cli": actor.get("cli"),
         "project": _project_from_data(data),
         "events_count": len(events),
-        "turns": data.get(
-            "total_turns",
-            event_types.get("bloodbank.v1.conversation.turn.started", 0),
-        ),
-        "tools_requested": event_types.get("bloodbank.v1.tool.tool_call.requested", 0),
-        "tools_invoked": event_types.get("bloodbank.v1.tool.tool_call.invoked", 0),
+        "turns": total_turns,
+        "tools_requested": canonical_counts.get(TOOL_REQUESTED_TYPE, 0),
+        "tools_invoked": canonical_counts.get(TOOL_INVOKED_TYPE, 0),
         "events_by_type": dict(event_types),
     }
 
