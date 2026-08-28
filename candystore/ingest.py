@@ -12,8 +12,9 @@ logger = logging.getLogger("candystore.ingest")
 
 SUBSCRIBE_PUBSUB = os.environ.get("SUBSCRIBE_PUBSUB", "bloodbank-pubsub")
 # ONE wildcard covering every subject the BLOODBANK_EVENTS stream binds
-# (bloodbank/compose/nats/streams.json): `bloodbank.evt.v1.>` plus the v2
-# repo-maintenance action-failure extension.
+# (bloodbank/compose/nats/streams.json), whatever the grammar happens to be:
+# `bloodbank.evt.>` matches the legacy `bloodbank.evt.v1.*`/`v2.*` subjects and
+# the current version-free `bloodbank.evt.<domain>.<entity>.<action>` alike.
 #
 # It must be one subject, not a list. A Dapr pubsub.jetstream component creates
 # a single consumer, and a JetStream consumer is tied to one filter subject, so
@@ -23,33 +24,18 @@ SUBSCRIBE_PUBSUB = os.environ.get("SUBSCRIBE_PUBSUB", "bloodbank-pubsub")
 # effect on the v2 subject: pr-crusher's action-phase failure -- its
 # highest-severity event -- reached the stream and was never projected here.
 #
-# Widening to `bloodbank.evt.>` adds no risk: a consumer only ever receives what
-# the stream already holds, and this projection is meant to be the store's
-# complete durable history.
+# The lesson generalizes past that incident: any subscription that enumerates
+# subjects is a second copy of the stream config, and it goes stale silently --
+# the events simply stop arriving, with no error anywhere. Do not reintroduce a
+# per-subject topic list here. The wildcard adds no risk: a consumer only ever
+# receives what the stream already holds, and this projection is meant to be the
+# store's complete durable history.
 SUBSCRIBE_TOPIC = os.environ.get("SUBSCRIBE_TOPIC", "bloodbank.evt.>")
 SUBSCRIBE_ROUTE = os.environ.get("SUBSCRIBE_ROUTE", "/events/all")
-
-EXPLICIT_TOPICS = [
-    ("bloodbank.evt.v1.cli.session.started", "/events/cli_session_started"),
-    ("bloodbank.evt.v1.cli.session.ended", "/events/cli_session_ended"),
-    ("bloodbank.evt.v1.conversation.turn.started", "/events/turn_started"),
-    ("bloodbank.evt.v1.tool.tool_call.requested", "/events/tool_requested"),
-    ("bloodbank.evt.v1.tool.tool_call.invoked", "/events/tool_invoked"),
-    ("bloodbank.evt.v1.tool.tool_call.completed", "/events/tool_completed"),
-    ("bloodbank.evt.v1.agent.invocation.completed", "/events/agent_completed"),
-    ("bloodbank.evt.v1.agent.invocation.failed", "/events/agent_failed"),
-    ("bloodbank.evt.v1.system.heartbeat.received", "/events/heartbeat"),
-]
 
 
 def subscribe_response() -> list[dict[str, str]]:
     """Return Dapr programmatic subscription declarations."""
-    if os.environ.get("SUBSCRIBE_MODE", "wildcard").lower() == "explicit":
-        return [
-            {"pubsubname": SUBSCRIBE_PUBSUB, "topic": topic, "route": route}
-            for topic, route in EXPLICIT_TOPICS
-        ]
-
     return [
         {
             "pubsubname": SUBSCRIBE_PUBSUB,
@@ -60,9 +46,7 @@ def subscribe_response() -> list[dict[str, str]]:
 
 
 def known_event_routes() -> set[str]:
-    routes = {SUBSCRIBE_ROUTE}
-    routes.update(route for _, route in EXPLICIT_TOPICS)
-    return routes
+    return {SUBSCRIBE_ROUTE}
 
 
 def handle_event(body: bytes, topic: str | None = None) -> dict[str, Any]:

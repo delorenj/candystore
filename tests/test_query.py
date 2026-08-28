@@ -78,10 +78,29 @@ def test_scope_filter_uses_domain_and_entity_not_repo_slug(db, sample_event):
         type="bloodbank.v1.repo.candybar.decision.recorded",
         data={"repo": "candybar", "decision": "Legacy invalid slugged type"},
     )
-    for event in (valid_decision, legacy_slugged_decision):
+    version_free_decision = sample_event(
+        id="550e8400-e29b-41d4-a716-446655440012",
+        time="2026-05-24T20:00:00Z",
+        domain="repo",
+        type="bloodbank.repo.decision.recorded",
+        data={"repo": "candybar", "decision": "Version-free four-token type"},
+    )
+    for event in (valid_decision, legacy_slugged_decision, version_free_decision):
         assert insert_event(event) is True
 
     decision_events = list_events(scope="repo.decision", limit=10)
 
-    assert decision_events["total"] == 1
-    assert decision_events["events"][0]["type"] == "bloodbank.v1.repo.decision.recorded"
+    # Both shapes match: the version token's PRESENCE must not shift the scope
+    # filter's reading of domain/entity. Positional split_part on the raw type
+    # silently answered "repo.decision" with only the v1 row and filed the
+    # four-token one under scope "decision" instead.
+    assert decision_events["total"] == 2
+    assert {event["type"] for event in decision_events["events"]} == {
+        "bloodbank.v1.repo.decision.recorded",
+        "bloodbank.repo.decision.recorded",
+    }
+
+    # Domain-only scope reads the same slot in both shapes -- and the legacy
+    # slugged type is still domain `repo`, so it belongs here.
+    assert list_events(scope="repo", limit=10)["total"] == 3
+    assert list_events(scope="decision", limit=10)["total"] == 0

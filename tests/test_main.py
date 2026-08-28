@@ -17,7 +17,7 @@ def test_http_ingest_and_query(db, sample_event):
     try:
         status, body = request(host, port, "GET", "/dapr/subscribe")
         assert status == 200
-        assert body[0]["topic"] == "bloodbank.evt.v1.>"
+        assert body[0]["topic"] == "bloodbank.evt.>"
 
         env = sample_event(id="550e8400-e29b-41d4-a716-446655440333")
         status, body = request(host, port, "POST", "/events/all", env)

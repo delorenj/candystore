@@ -7,6 +7,18 @@ from typing import Any
 from candystore.db import cursor
 from candystore.summarize import summarize
 
+# The `type` column holds two shapes forever: the historical five-token
+# `bloodbank.v1.<domain>.<entity>.<action>` on ~718k rows already in the table,
+# and the current version-free four-token `bloodbank.<domain>.<entity>.<action>`
+# on everything published since. A positional `split_part(type, '.', 3/4)` is
+# agnostic to the version token's VALUE, not to its PRESENCE -- drop the token
+# and domain/entity shift one slot left, so a --scope filter silently returns
+# the WRONG rows instead of erroring (measured: `--scope agent.tool` matched 0
+# of the 1128 new-shape rows, and those rows answered `--scope tool` instead).
+# Strip the prefix and its optional version first; then domain and entity sit
+# at positions 1 and 2 for both shapes.
+SCOPE_TYPE_EXPR = "regexp_replace(type, '^bloodbank\\.(v[0-9]+\\.)?', '')"
+
 PROJECT_EXPR = (
     "COALESCE(NULLIF(data->>'project', ''), "
     "NULLIF(regexp_replace(COALESCE(data->>'git_remote', ''), '.*/', ''), ''), "
@@ -244,14 +256,15 @@ def _filters(**kwargs: str | None) -> tuple[list[str], list[Any]]:
         for value in values:
             parts = value.split(".")
             if len(parts) == 2:
-                # scope.level — match exactly at positions 3 and 4
+                # domain.entity — match both, version-agnostically
                 conditions.append(
-                    "split_part(type, '.', 3) = %s AND split_part(type, '.', 4) = %s"
+                    f"split_part({SCOPE_TYPE_EXPR}, '.', 1) = %s "
+                    f"AND split_part({SCOPE_TYPE_EXPR}, '.', 2) = %s"
                 )
                 params.extend(parts)
             elif len(parts) == 1:
-                # scope only — match position 3
-                conditions.append("split_part(type, '.', 3) = %s")
+                # domain only
+                conditions.append(f"split_part({SCOPE_TYPE_EXPR}, '.', 1) = %s")
                 params.append(parts[0])
         if conditions:
             where.append(f"({' OR '.join(conditions)})")
