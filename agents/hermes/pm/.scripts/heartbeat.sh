@@ -8,23 +8,36 @@
 # full pass executes the role's sentinel.prompt.md, which reasons about tickets
 # through the ticket-provider adapter (Linear | Plane | Trello) — never a
 # hardcoded backend. After the sentinel decision (skip OR full), it
-# opportunistically checkpoints the runtime submodule (commit+push) at most once
+# opportunistically checkpoints only legacy nested-Git runtimes at most once
 # per HEARTBEAT_CHECKPOINT_MIN_INTERVAL_SECONDS, so memory/session state stays
 # durable without pushing every minute.
 set -euo pipefail
 
 ROLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # agents/hermes/<role>
 RUNTIME="$ROLE_DIR/runtime"
+RUN_HOME="${HERMES_HOME:-$RUNTIME}"
 PROMPT_FILE="$ROLE_DIR/.scripts/sentinel.prompt.md"
 STATE_FILE="$RUNTIME/continuous-ticket-sentinel-state.json"
 LOCK_FILE="$RUNTIME/continuous-ticket-sentinel.lock"
 ROLE_YAML="$ROLE_DIR/role.yaml"
+FLEET_ENV="${HERMES_FLEET_ENV:-$HOME/.hermes/fleet.env}"
+FLEET_ENV_LIBRARY="$ROLE_DIR/.scripts/lib/fleet-env.sh"
+FLEET_ENV_PARSER="$ROLE_DIR/.scripts/lib/parse-fleet-env.py"
 LOG_FILE="$RUNTIME/logs/heartbeat.log"
 CHECKPOINT_BIN="$ROLE_DIR/.scripts/checkpoint.sh"
 CHECKPOINT_STAMP="$RUNTIME/.last-checkpoint"
 
+if [[ ! -f "$FLEET_ENV_LIBRARY" || -L "$FLEET_ENV_LIBRARY" \
+   || ! -f "$FLEET_ENV_PARSER" || -L "$FLEET_ENV_PARSER" ]]; then
+  echo "heartbeat: trusted fleet environment loader unavailable" >&2
+  exit 1
+fi
+# shellcheck source=lib/fleet-env.sh
+builtin source "$FLEET_ENV_LIBRARY"
+load_fleet_environment "$FLEET_ENV" "$FLEET_ENV_PARSER"
+
 # Hermes binary: explicit env > ~/.config/hermes-agent/hermes-bin > PATH.
-HERMES_BIN="${HERMES_BIN:-}"
+HERMES_BIN="${HERMES_BIN:-${HERMES_FLEET_BIN:-}}"
 if [[ -z "$HERMES_BIN" ]]; then
   if [[ -r "$HOME/.config/hermes-agent/hermes-bin" ]]; then
     HERMES_BIN="$(cat "$HOME/.config/hermes-agent/hermes-bin")"
@@ -230,7 +243,8 @@ tmp = path.with_suffix(path.suffix + ".tmp"); tmp.write_text(json.dumps(state, i
 PYEOF
 
 # Coexistence WIP=1 lease (momo E2/S2.3): don't full-drive if the human-drivable
-# Momo holds it. A crashed holder's lease expires (ttl) so the board is never wedged.
+# Momo holds it — it's driving the same board. A crashed holder's lease expires
+# (ttl) so the board is never wedged. Release on any exit.
 WIP_LOCK="$RUNTIME/wip-driver.lock"
 if ! python3 "$ROLE_DIR/.scripts/momo-wip-lock.py" acquire "$WIP_LOCK" "hermes:$AGENT_ID" --ttl 3600 >/dev/null 2>&1; then
   printf '[heartbeat] WIP lease held by Momo — skipping full reconcile pass this tick\n'
@@ -241,7 +255,7 @@ trap 'python3 "$ROLE_DIR/.scripts/momo-wip-lock.py" release "$WIP_LOCK" "hermes:
 
 prompt="$(<"$PROMPT_FILE")"
 set +e
-env HERMES_HOME="$RUNTIME" "$HERMES_BIN" chat -Q --source cron --max-turns 90 -q "$prompt"
+env HERMES_HOME="$RUN_HOME" "$HERMES_BIN" chat -Q --source cron --max-turns 90 -q "$prompt"
 status=$?
 set -e
 
