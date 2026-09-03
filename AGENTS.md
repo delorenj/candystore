@@ -10,6 +10,8 @@ Candystore is the Bloodbank durable event audit trail. Keep it aligned with
 - PostgreSQL persistence through `psycopg2`
 - Plain SQL migrations in `migrations/`
 - React/Vite/Tailwind UI in `web/`, built into `static/`
+- Free-text search over a generated `search_text` column indexed with a
+  `pg_trgm` GIN index (`migrations/003_search.sql`)
 - No FastAPI, RabbitMQ consumer, SQLAlchemy, or Alembic in this implementation
 - PLANNED: <https://tanstack.com/store/latest> as a state management library
 
@@ -61,5 +63,16 @@ events between two databases.
 - Heat maps can be generated across multiple dimensions like project activity, agent clis, topic, etc.
 
 - System-wide time-bound recap reports can be generated to help agents understand the state of the system at a given point in time.
+
+- Free-text search across the whole trail: `GET /events?q=<terms>`. It matches
+  file paths, tool names, branches, commands, models, statuses and error text,
+  and it composes with every other filter (`cli`, `project`, `scope`, `from`,
+  `to`). Whitespace separates terms that must ALL match, so `q=holocene+traefik`
+  means "traefik work in holocene" and not one literal phrase. Pasting an event
+  or session UUID resolves it exactly. Terms under 3 characters are refused with
+  a 400 -- the trigram index cannot serve them and the query would degrade to a
+  full scan of the trail. The haystack is capped at 512 characters per event, so
+  deep prose (a long tool `arguments` or hook `payload`) is searchable only near
+  its start.
 
 - [TODO] SO many more things! Keep this list growing!

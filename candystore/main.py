@@ -18,6 +18,7 @@ from candystore import stats
 from candystore.db import check_connection, init_schema, record_dead_letter
 from candystore.ingest import handle_event, known_event_routes, subscribe_response
 from candystore.query import (
+    SearchError,
     by_cli,
     by_project,
     daily,
@@ -71,20 +72,34 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/events":
             qs = parse_qs(parsed.query)
-            result = list_events(
-                type=_first(qs, "type"),
-                domain=_first(qs, "domain"),
-                from_time=_first(qs, "from"),
-                to_time=_first(qs, "to"),
-                correlationid=_first(qs, "correlationid"),
-                producer=_first(qs, "producer"),
-                service=_first(qs, "service"),
-                cli=_first(qs, "cli"),
-                project=_first(qs, "project"),
-                scope=_first(qs, "scope"),
-                limit=int(_first(qs, "limit") or "100"),
-                offset=int(_first(qs, "offset") or "0"),
-            )
+            try:
+                limit = int(_first(qs, "limit") or "100")
+                offset = int(_first(qs, "offset") or "0")
+            except ValueError as exc:
+                self._send_json(400, {"error": f"invalid limit or offset: {exc}"})
+                return
+            try:
+                result = list_events(
+                    type=_first(qs, "type"),
+                    domain=_first(qs, "domain"),
+                    from_time=_first(qs, "from"),
+                    to_time=_first(qs, "to"),
+                    correlationid=_first(qs, "correlationid"),
+                    producer=_first(qs, "producer"),
+                    service=_first(qs, "service"),
+                    cli=_first(qs, "cli"),
+                    project=_first(qs, "project"),
+                    scope=_first(qs, "scope"),
+                    q=_first(qs, "q"),
+                    limit=limit,
+                    offset=offset,
+                )
+            except SearchError as exc:
+                # A `q` the index cannot serve is the caller's to fix; say so
+                # rather than running a scan that would take minutes. Anything
+                # else still raises, so a real server fault is not disguised.
+                self._send_json(400, {"error": str(exc)})
+                return
             self._send_json(200, result)
             return
 

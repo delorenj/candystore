@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from datetime import UTC, datetime
 from typing import Any
+from uuid import UUID
 
 from candystore.db import cursor
 from candystore.summarize import canonical_type, summarize
@@ -56,6 +57,30 @@ PROJECT_EXPR = (
     "'unknown')"
 )
 
+# Free-text search (`q`) runs against the generated `search_text` column and its
+# trigram index (migrations/003_search.sql).
+#
+# A trigram index cannot answer a pattern with no complete 3-gram in it, so a
+# 1- or 2-character term silently degrades to a sequential scan of every row --
+# 869k rows and ~4 GB of TOAST at the time of writing, i.e. minutes per
+# keystroke from a search-as-you-type box. Short terms are refused instead of
+# served slowly; the caller gets a 400 that says so.
+SEARCH_MIN_TERM = 3
+
+
+class SearchError(ValueError):
+    """A `q` the search index cannot serve. Distinct from a bare ValueError so
+    main.py can answer 400 for it without also swallowing an unrelated internal
+    ValueError and reporting a server bug as the caller's fault."""
+
+# LIKE metacharacters in a user's term are literal text, not syntax: searching
+# `file_path` must not match `filexpath`, and `100%` must not match everything.
+# psycopg2 parameterizes the VALUE, which stops injection but leaves `%` and `_`
+# meaningful to the pattern matcher, so they are escaped here. Backslash first,
+# or it would double-escape the escapes added after it. LIKE's default escape
+# character is backslash, so no ESCAPE clause is needed.
+_LIKE_ESCAPES = str.maketrans({"\\": "\\\\", "%": "\\%", "_": "\\_"})
+
 
 def list_events(
     *,
@@ -69,6 +94,7 @@ def list_events(
     cli: str | None = None,
     project: str | None = None,
     scope: str | None = None,
+    q: str | None = None,
     limit: int = 100,
     offset: int = 0,
 ) -> dict[str, Any]:
@@ -83,6 +109,7 @@ def list_events(
         cli=cli,
         project=project,
         scope=scope,
+        q=q,
     )
     limit = max(1, min(int(limit), 1000))
     offset = max(0, int(offset))
@@ -341,8 +368,54 @@ def _filters(**kwargs: str | None) -> tuple[list[str], list[Any]]:
     if kwargs["project"]:
         where.append(f"{PROJECT_EXPR} ILIKE %s")
         params.append(f"%{kwargs['project']}%")
+    if kwargs.get("q") and kwargs["q"].strip():
+        clause, search_params = _search_clause(kwargs["q"])
+        where.append(clause)
+        params.extend(search_params)
 
     return where, params
+
+
+def _search_clause(q: str) -> tuple[str, list[Any]]:
+    """Build the WHERE fragment for a free-text `q`.
+
+    Raises SearchError on a term the trigram index cannot serve; main.py turns
+    that into a 400 rather than letting it become a minutes-long scan.
+    """
+    text = q.strip()
+
+    # A bare UUID is an id, not prose. Pasting an event id or a session
+    # (correlation) id into the search box is the single most common thing an
+    # operator does with one, and both columns are btree-indexed -- so answer it
+    # exactly and instantly instead of trigram-scanning for a 36-character
+    # string that `search_text` deliberately does not even contain (UUID
+    # trigrams are near-uniform hex and would bloat the index for nothing).
+    event_id = _as_uuid(text)
+    if event_id:
+        return "(id = %s::uuid OR correlationid = %s::uuid)", [event_id, event_id]
+
+    # Whitespace separates terms that must ALL match, rather than one literal
+    # phrase: `search_text` is a concatenation of fields, so `candystore Edit`
+    # meaning "an Edit tool call in candystore" is both the useful reading and
+    # the only one that can match across two fields.
+    terms = text.split()
+    short = sorted({term for term in terms if len(term) < SEARCH_MIN_TERM})
+    if short:
+        raise SearchError(
+            f"search terms must be at least {SEARCH_MIN_TERM} characters: "
+            f"{', '.join(repr(term) for term in short)}"
+        )
+
+    clause = " AND ".join(["search_text ILIKE %s"] * len(terms))
+    params = [f"%{term.translate(_LIKE_ESCAPES)}%" for term in terms]
+    return f"({clause})", params
+
+
+def _as_uuid(value: str) -> str | None:
+    try:
+        return str(UUID(value))
+    except (ValueError, AttributeError, TypeError):
+        return None
 
 
 def _preview_from_row(row: tuple[Any, ...]) -> dict[str, Any]:

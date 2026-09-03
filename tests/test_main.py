@@ -44,6 +44,34 @@ def test_http_ingest_and_query(db, sample_event):
         thread.join(timeout=3)
 
 
+def test_http_search(db, sample_event):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+
+    try:
+        env = sample_event(id="550e8400-e29b-41d4-a716-4466554cc111")
+        assert request(host, port, "POST", "/events/all", env)[0] == 200
+
+        status, body = request(host, port, "GET", "/events?q=candystore")
+        assert status == 200
+        assert body["total"] == 1
+
+        # A term the trigram index cannot serve is a client error, not a 500 and
+        # not a minutes-long scan.
+        status, body = request(host, port, "GET", "/events?q=ab")
+        assert status == 400
+        assert "at least 3 characters" in body["error"]
+
+        status, body = request(host, port, "GET", "/events?q=candystore&cli=copilot")
+        assert status == 200
+        assert body["total"] == 0
+    finally:
+        server.shutdown()
+        thread.join(timeout=3)
+
+
 def request(host: str, port: int, method: str, path: str, payload: dict | None = None):
     conn = http.client.HTTPConnection(host, port, timeout=5)
     body = json.dumps(payload).encode("utf-8") if payload is not None else None
