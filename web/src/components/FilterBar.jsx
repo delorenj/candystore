@@ -29,7 +29,7 @@ function isoLocal(hoursAgo) {
   return date.toISOString().slice(0, 16);
 }
 
-export default function FilterBar({ filters, onChange }) {
+export default function FilterBar({ filters, onChange, projects = [] }) {
   const update = (key, value) => onChange({ ...filters, [key]: value });
   const setPreset = (hours) => onChange({ ...filters, from: isoLocal(hours), to: "" });
 
@@ -77,14 +77,25 @@ export default function FilterBar({ filters, onChange }) {
             ))}
           </select>
         </label>
+        {/* A registry slug, picked -- not typed. `?project=` used to be a
+            substring match over a directory basename, which both matched the
+            wrong projects and missed every worktree. Typing is also how you
+            get a 400 now, so there is nothing to type. */}
         <label className="grid gap-1 text-xs font-medium uppercase text-zinc-500">
           Project
-          <input
-            type="text"
+          <select
             className="focus-ring rounded-md border border-line bg-zinc-900 px-3 py-2 text-sm text-zinc-100"
             value={filters.project}
             onChange={(event) => update("project", event.target.value)}
-          />
+          >
+            <option value="">All projects</option>
+            {projects.map((project) => (
+              <option key={project.slug} value={project.slug}>
+                {project.name}
+                {project.count ? ` (${project.count.toLocaleString()})` : ""}
+              </option>
+            ))}
+          </select>
         </label>
       </div>
 

@@ -51,6 +51,13 @@ REQUIRE_DB_ENV = "CANDYSTORE_REQUIRE_DB"
 # nor truncated and the row check quietly covers less than it appears to.
 TRUNCATED_TABLES: tuple[str, ...] = ("events", "dead_letter")
 
+# `project_dir_map` and `projects` (migrations 005/006) are deliberately NOT in
+# the list above. They are reference data synced from the pjangler registry, not
+# audit data -- truncating them between tests would delete a developer's real
+# map, and the row-count guard below would count rows this suite never wrote.
+# A test that needs them uses the `project_map` fixture, which seeds exactly the
+# directories it names and removes exactly those again.
+
 # Second, independent check (see `_assert_disposable_contents`). The fixture
 # truncates at setup AND teardown, so a database used only by this suite holds
 # single-digit rows whenever the guard runs -- never thousands. 1000 is
@@ -633,6 +640,55 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
                 ]
             )
         )
+
+
+@pytest.fixture
+def project_map(db: None) -> Iterator[None]:
+    """Seed the registry projection for the directories the fixtures use.
+
+    Scoped rather than truncating: these tables hold reference data, so the
+    fixture inserts the rows it needs and deletes those same rows back out
+    (see TRUNCATED_TABLES). Every path here is real -- `bb` in particular is a
+    registry slug that is not its directory's basename, which is the case a
+    basename-derived project name can never get right.
+    """
+    from candystore.db import cursor as db_cursor
+
+    rows = (
+        ("/home/delorenj/code/33GOD/candystore", "candystore", "repo-path"),
+        ("/home/delorenj/code/33GOD/bloodbank", "bb", "repo-path"),
+        ("/home/delorenj/code/james-brennan", "james-brennan", "repo-path"),
+        ("/home/delorenj/code/james-brennan-jimb169", "james-brennan", "sibling-worktree"),
+        ("/tmp/hermes-board-cranker-50", None, "unresolved"),
+    )
+    registry = (
+        ("candystore", "Candystore", "/home/delorenj/code/33GOD/candystore", "CANDYS"),
+        ("bb", "bb", "/home/delorenj/code/33GOD/bloodbank", "BB"),
+        ("james-brennan", "james-brennan", "/home/delorenj/code/james-brennan", "JIMB"),
+        # In the registry with no events -- the picker must still list it.
+        ("vinyl", "vinyl", "/home/delorenj/code/vinyl", "VINY"),
+    )
+    with db_cursor() as cur:
+        cur.executemany(
+            "INSERT INTO project_dir_map (work_dir, slug, rule) VALUES (%s, %s, %s) "
+            "ON CONFLICT (work_dir) DO UPDATE SET slug = EXCLUDED.slug, rule = EXCLUDED.rule",
+            rows,
+        )
+        cur.executemany(
+            "INSERT INTO projects (slug, name, repo_path, ticket_prefix) "
+            "VALUES (%s, %s, %s, %s) ON CONFLICT (slug) DO UPDATE "
+            "SET name = EXCLUDED.name, repo_path = EXCLUDED.repo_path, "
+            "ticket_prefix = EXCLUDED.ticket_prefix",
+            registry,
+        )
+    try:
+        yield
+    finally:
+        with db_cursor() as cur:
+            cur.execute("DELETE FROM project_dir_map WHERE work_dir = ANY(%s)",
+                        ([row[0] for row in rows],))
+            cur.execute("DELETE FROM projects WHERE slug = ANY(%s)",
+                        ([row[0] for row in registry],))
 
 
 @pytest.fixture

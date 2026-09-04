@@ -12,6 +12,7 @@ export default function EventList() {
   const [totalCapped, setTotalCapped] = useState(false);
   const [window_, setWindow] = useState(null);
   const [status, setStatus] = useState("loading");
+  const [projects, setProjects] = useState([]);
   const [filters, setFilters] = useState({ from: "", to: "", cli: "", project: "", scope: "" });
   const [search, setSearch] = useState("");
   const [activeSearch, setActiveSearch] = useState("");
@@ -22,6 +23,22 @@ export default function EventList() {
     const timer = setTimeout(() => setActiveSearch(search), SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [search]);
+
+  // The registry does not change when a filter does, so this is fetched once
+  // rather than riding along with every query.
+  useEffect(() => {
+    let cancelled = false;
+    getJson("/projects?window=7d")
+      .then((data) => {
+        if (!cancelled) setProjects(data.projects || []);
+      })
+      .catch(() => {
+        if (!cancelled) setProjects([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const query = useMemo(() => {
     // `total=1` because this view renders the count. It comes back capped at
@@ -73,7 +90,7 @@ export default function EventList() {
         onChange={setSearch}
         pending={settling || (searching && status === "loading")}
       />
-      <FilterBar filters={filters} onChange={setFilters} />
+      <FilterBar filters={filters} onChange={setFilters} projects={projects} />
       <div className="flex items-center justify-between gap-3 text-sm text-zinc-400">
         <span>
           {status !== "ready" ? (

@@ -201,7 +201,26 @@ def sync(projects: list[Project] | None = None) -> dict[str, int]:
         rows.append((work_dir, slug, rule, seen))
 
     with cursor() as cur:
-        # One statement so a concurrent reader never sees a half-built map.
+        # Both tables in one transaction, so a reader never sees a registry
+        # that disagrees with the map built from it.
+        cur.executemany(
+            """
+            INSERT INTO projects (slug, name, repo_path, ticket_prefix, synced_at)
+            VALUES (%s, %s, %s, %s, NOW())
+            ON CONFLICT (slug) DO UPDATE
+               SET name = EXCLUDED.name,
+                   repo_path = EXCLUDED.repo_path,
+                   ticket_prefix = EXCLUDED.ticket_prefix,
+                   synced_at = NOW()
+            """,
+            [(p.slug, p.name, p.repo_path, p.ticket_prefix) for p in projects],
+        )
+        # A project removed from the registry has to leave the projection too,
+        # or the picker keeps offering something that no longer exists.
+        cur.execute(
+            "DELETE FROM projects WHERE slug <> ALL(%s)",
+            ([p.slug for p in projects],),
+        )
         cur.executemany(
             """
             INSERT INTO project_dir_map (work_dir, slug, rule, seen, resolved_at)

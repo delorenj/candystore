@@ -14,7 +14,7 @@ from candystore.query import (
 )
 
 
-def test_event_queries_and_summaries(db, sample_event):
+def test_event_queries_and_summaries(db, project_map, sample_event):
     session_id = "550e8400-e29b-41d4-a716-446655440111"
     first = sample_event(
         id="550e8400-e29b-41d4-a716-446655440000",
@@ -40,6 +40,10 @@ def test_event_queries_and_summaries(db, sample_event):
     for event in (first, second, third):
         assert insert_event(event) is True
 
+    # `project=` is a registry slug resolved through project_dir_map now, not a
+    # substring of a directory basename -- the sample events' working_directory
+    # is /home/delorenj/code/33GOD/candystore, which the map assigns to
+    # `candystore` (see the project_map fixture).
     listed = list_events(cli="claude", project="candystore", limit=10)
     assert listed["total"] == 2
     assert listed["events"][0]["summary"]["title"].startswith("Session ended")

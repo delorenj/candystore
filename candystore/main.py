@@ -29,7 +29,9 @@ from candystore.query import (
     get_session_events,
     get_session_summary,
     heatmap,
+    known_project_slugs,
     list_events,
+    list_projects,
 )
 from candystore.summarize import summarize
 
@@ -85,6 +87,21 @@ class Handler(BaseHTTPRequestHandler):
             # the measurements). `?total=1` buys a capped count.
             correlationid = _first(qs, "correlationid")
             q = _first(qs, "q")
+            # `?project=` is a registry slug now, so a typo is a client error
+            # rather than a silently empty feed. "no events yet" and "no such
+            # project" are different answers and only one of them is the
+            # caller's mistake.
+            project = _first(qs, "project")
+            if project and project not in known_project_slugs():
+                self._send_json(
+                    400,
+                    {
+                        "error": f"unknown project slug {project!r}",
+                        "hint": "GET /projects lists the registry; run "
+                        "`mise run project:sync` after registering a new one",
+                    },
+                )
+                return
             from_time, to_time = applied_window(
                 _first(qs, "from"),
                 _first(qs, "to"),
@@ -101,7 +118,7 @@ class Handler(BaseHTTPRequestHandler):
                     producer=_first(qs, "producer"),
                     service=_first(qs, "service"),
                     cli=_first(qs, "cli"),
-                    project=_first(qs, "project"),
+                    project=project,
                     scope=_first(qs, "scope"),
                     q=q,
                     limit=limit,
@@ -159,6 +176,22 @@ class Handler(BaseHTTPRequestHandler):
                     {"session_id": session_id, "events": get_session_events(session_id)},
                 )
                 return
+
+        if path == "/projects":
+            qs = parse_qs(parsed.query)
+            window = _first(qs, "window") or "24h"
+            hours = _WINDOW_HOURS.get(window)
+            if hours is None:
+                self._send_json(
+                    400,
+                    {
+                        "error": f"unknown window {window!r}",
+                        "valid": sorted(_WINDOW_HOURS),
+                    },
+                )
+                return
+            self._send_json(200, list_projects(window_hours=hours))
+            return
 
         if path == "/summary/heatmap":
             qs = parse_qs(parsed.query)
@@ -327,6 +360,11 @@ def main() -> int:
 def _first(qs: dict[str, list[str]], key: str) -> str | None:
     vals = qs.get(key)
     return vals[0] if vals else None
+
+
+# The window presets the picker offers. A closed set rather than a duration
+# parser: every extra shape is another way for a caller to ask for a scan.
+_WINDOW_HOURS = {"1h": 1, "24h": 24, "7d": 24 * 7, "30d": 24 * 30}
 
 
 # Accepts the spellings a querystring actually arrives in. `?total` with no

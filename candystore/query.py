@@ -6,6 +6,7 @@ from typing import Any
 from uuid import UUID
 
 from candystore.db import cursor
+from candystore.projects import WORK_DIR_EXPR
 from candystore.summarize import canonical_type, summarize
 
 # The `type` column holds two shapes forever: the historical five-token
@@ -355,6 +356,58 @@ def by_cli(from_time: str | None = None, to_time: str | None = None) -> list[dic
     return [{"cli": row[0], "count": row[1]} for row in rows]
 
 
+def list_projects(window_hours: int = DEFAULT_WINDOW_HOURS) -> dict[str, Any]:
+    """The PJangler registry, each project with its event count in the window.
+
+    Reads the `projects` projection rather than deriving a project list from
+    the trail. `/summary/by-project` does the latter and it is why the old
+    picker offered `dist`, `.agents`, `mirror` and `james-brennan.git` as
+    choices -- and took 11.59 s to do it.
+
+    A registry project with no events is included with count 0. It has to be:
+    a freshly created project is unselectable otherwise, and that is exactly
+    when someone goes looking for it.
+    """
+    counts_sql = f"""
+    SELECT m.slug, COUNT(*) AS events
+    FROM events e
+    JOIN project_dir_map m ON m.work_dir = {WORK_DIR_EXPR}
+    WHERE e.time >= NOW() - make_interval(hours => %s)
+      AND m.slug IS NOT NULL
+    GROUP BY m.slug
+    """
+    with cursor() as cur:
+        cur.execute(counts_sql, (window_hours,))
+        counts = {row[0]: row[1] for row in cur.fetchall()}
+        cur.execute(
+            "SELECT slug, name, repo_path, ticket_prefix FROM projects ORDER BY slug"
+        )
+        registry = cur.fetchall()
+
+    projects = [
+        {
+            "slug": row[0],
+            "name": row[1],
+            "repo_path": row[2],
+            "ticket_prefix": row[3],
+            "count": counts.get(row[0], 0),
+        }
+        for row in registry
+    ]
+    return {
+        "projects": projects,
+        # Echoed rather than baked into the field name: calling it `count_24h`
+        # would be a lie the moment someone passes ?window=7d.
+        "window_hours": window_hours,
+    }
+
+
+def known_project_slugs() -> set[str]:
+    with cursor() as cur:
+        cur.execute("SELECT slug FROM projects")
+        return {row[0] for row in cur.fetchall()}
+
+
 def by_project(from_time: str | None = None, to_time: str | None = None) -> list[dict[str, Any]]:
     sql = f"""
     SELECT {PROJECT_EXPR} AS project, COUNT(*) AS count
@@ -424,8 +477,19 @@ def _filters(**kwargs: str | None) -> tuple[list[str], list[Any]]:
         where.append("actor->>'cli' = %s")
         params.append(kwargs["cli"])
     if kwargs["project"]:
-        where.append(f"{PROJECT_EXPR} ILIKE %s")
-        params.append(f"%{kwargs['project']}%")
+        # A registry slug, resolved through project_dir_map -- not a substring
+        # of a basename. The old `PROJECT_EXPR ILIKE '%...%'` was wrong in both
+        # directions: it matched `intelliforia` against `intelliforia-mobile`,
+        # and it missed every worktree whose basename does not contain the
+        # project name. It was also non-sargable, so it cost a full scan
+        # (measured 8.45 s; the planner estimated 37 rows against 118,745).
+        #
+        # The subquery returns a few dozen directories at most, which the
+        # work_dir expression can be compared against directly.
+        where.append(
+            f"{WORK_DIR_EXPR} IN (SELECT work_dir FROM project_dir_map WHERE slug = %s)"
+        )
+        params.append(kwargs["project"])
     if kwargs.get("q") and kwargs["q"].strip():
         clause, search_params = _search_clause(kwargs["q"])
         where.append(clause)
