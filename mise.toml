@@ -37,6 +37,10 @@ run = "bash tests/migration_test.sh"
 description = "Run ruff"
 run = "ruff check candystore/ tests/"
 
+[tasks."project:sync"]
+description = "Resolve trail working directories to pjangler registry projects"
+run = "python -m candystore.projects"
+
 [tasks."build:ui"]
 description = "Build React SPA into static/"
 run = "cd web && npm run build"
