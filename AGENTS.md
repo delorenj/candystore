@@ -13,7 +13,8 @@ Candystore is the Bloodbank durable event audit trail. Keep it aligned with
 - Free-text search over a generated `search_text` column indexed with a
   `pg_trgm` GIN index (`migrations/003_search.sql`, re-capped by `004`)
 - No FastAPI, RabbitMQ consumer, SQLAlchemy, or Alembic in this implementation
-- PLANNED: <https://tanstack.com/store/latest> as a state management library
+- Frontend state: `useReducer` + one page-level context. **TanStack Store was evaluated and rejected** (2026-09-04, CANDYS-52) — the hard part here is server-state lifecycle (cancellation, keep-previous, append-not-refetch, several derived views off one row array), which a client-state store solves none of. `@tanstack/react-virtual` *is* planned, for the live feed's fixed-height rows (CANDYS-57).
+- The live project feed is designed in `_bmad-output/candystore-live-feed-plan.md` (epics E8–E14, CANDYS-32…68), with its evidence in `_bmad-output/candystore-live-feed-measurements.md`. Read it before touching `web/src/pages/EventList.jsx`, `query.py:PROJECT_EXPR`, or adding any route under `/events/`.
 
 ## Commands
 
