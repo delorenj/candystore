@@ -12,6 +12,7 @@ from candystore.query import (
     heatmap,
     list_events,
 )
+from candystore.summarize import UNRESOLVED_PROJECT
 
 
 def test_event_queries_and_summaries(db, project_map, sample_event):
@@ -35,7 +36,9 @@ def test_event_queries_and_summaries(db, project_map, sample_event):
         domain="system",
         type="bloodbank.v1.system.heartbeat.received",
         actor={"cli": "copilot"},
-        data={"project": "other"},
+        # Outside every registry repo path, and `data.project` names no
+        # registered project -- so this row belongs to no project at all.
+        data={"project": "other", "working_directory": "/tmp/scratch-clone-99"},
     )
     for event in (first, second, third):
         assert insert_event(event) is True
@@ -64,7 +67,12 @@ def test_event_queries_and_summaries(db, project_map, sample_event):
     assert heatmap(group_by="cli")[0]["count"] >= 1
     assert daily()[0]["count"] == 3
     assert {item["cli"] for item in by_cli()} == {"claude", "copilot"}
-    assert {item["project"] for item in by_project()} >= {"candystore", "other"}
+    # The third event sits in /tmp and its `data.project` ("other") names no
+    # registered project, so it lands in the unassigned bucket rather than
+    # inventing one. Measured on the live table, three of the five distinct
+    # `data.project` values are entire JSON objects serialized as text -- which
+    # is why that field is honored only when it names a real registry slug.
+    assert {item["project"] for item in by_project()} == {"candystore", UNRESOLVED_PROJECT}
 
 
 def test_capped_count_reports_at_least_not_exactly(db, sample_event):

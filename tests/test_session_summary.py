@@ -99,6 +99,7 @@ def test_agent_session_ended_payload_is_authoritative():
                 "duration_seconds": 652,
                 "working_directory": "/home/delorenj/code/vinyl",
             },
+            project="vinyl",
         ),
     ]
 
@@ -107,19 +108,51 @@ def test_agent_session_ended_payload_is_authoritative():
     assert summary["turns"] == 107  # payload wins over the 1 counted turn event
     assert summary["duration_seconds"] == 652  # not the 600s wall-clock span
     assert summary["cli"] == "codex"
+    # Read off the row, which arrives already resolved from get_session_events.
+    # The roll-up must not re-derive it: basename(working_directory) is the
+    # derivation that reported worktrees and `dist` as projects, and a second
+    # copy of it here is how the list and the detail pane came to disagree.
     assert summary["project"] == "vinyl"
 
 
 def test_cli_session_ended_still_recognized():
     """The retired spelling has 592 live rows; it must not stop being a session end."""
     events = [
-        _event("bloodbank.v1.cli.session.ended", data={"total_turns": 9, "project": "candystore"}),
+        _event(
+            "bloodbank.v1.cli.session.ended",
+            data={"total_turns": 9},
+            project="candystore",
+        ),
     ]
 
     summary = session_summary("s-6", events)
 
     assert summary["turns"] == 9
     assert summary["project"] == "candystore"
+
+
+def test_session_project_is_the_first_resolved_row_not_a_re_derivation():
+    """A session can start outside a registered project and move into one --
+    472 of 2,204 measured sessions span more than one directory -- so the
+    roll-up scans for the first resolved slug rather than reading events[0].
+
+    And a session that resolves to nothing reports None. The old code answered
+    `basename(working_directory)` here, which is how `dist` became a project."""
+    events = [
+        _event("bloodbank.conversation.turn.started", time="2026-08-28T16:00:00Z"),
+        _event("bloodbank.conversation.turn.started", time="2026-08-28T16:01:00Z", project="bb"),
+    ]
+    assert session_summary("s-7", events)["project"] == "bb"
+
+    unplaced = [
+        _event(
+            "bloodbank.agent.session.ended",
+            data={"working_directory": "/tmp/hermes-board-cranker-50", "project": "wax"},
+        ),
+    ]
+    # Neither the directory basename nor the unregistered `data.project` value
+    # may become an answer.
+    assert session_summary("s-8", unplaced)["project"] is None
 
 
 def test_audio_session_ended_is_not_a_cli_session_end():

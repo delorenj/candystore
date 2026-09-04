@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-from candystore.summarize import summarize
+from candystore.summarize import UNRESOLVED_PROJECT, summarize
 
 
 def test_session_end_summary(sample_event):
     env = sample_event()
 
-    summary = summarize(env)
+    # The project is handed in, not derived: it depends on the pjangler
+    # registry, which an envelope cannot see. Deriving it here as well is what
+    # made /events and /events/<id>/summary disagree on 399 rows in 7 days.
+    summary = summarize(env, "candystore")
 
     assert summary["title"] == "Session ended - candystore (claude)"
     assert summary["duration"] == "1m 35s"
@@ -16,17 +19,33 @@ def test_session_end_summary(sample_event):
 def test_generic_summary(sample_event):
     env = sample_event(type="bloodbank.v1.unknown")
 
-    summary = summarize(env)
+    summary = summarize(env, "candystore")
 
     assert summary["title"] == "bloodbank.v1.unknown"
     assert summary["project"] == "candystore"
+
+
+def test_an_unresolved_project_says_so_rather_than_guessing(sample_event):
+    """With no resolved slug the summary must not fall back to
+    basename(working_directory) -- that fallback is what reported worktrees,
+    `dist` and `james-brennan.git` as projects. `unassigned` is the honest
+    answer: the repo is simply not in the registry yet (CANDYS-68) or the
+    directory is an ephemeral clone (CANDYS-39)."""
+    env = sample_event(data={"working_directory": "/home/delorenj/code/33GOD/candystore/dist"})
+
+    # The FIELD stays null -- it is data, and it must match the row-level
+    # PROJECT_EXPR byte for byte so /events and /events/<id>/summary agree.
+    assert summarize(env)["project"] is None
+    assert summarize(env, None)["project"] is None
+    # The TITLE is prose, so it gets the label rather than the word "None".
+    assert summarize(env)["title"] == f"Session ended - {UNRESOLVED_PROJECT} (claude)"
 
 
 def test_version_free_session_end_summary(sample_event):
     """The version-free four-token type must reach the same summarizer."""
     env = sample_event(type="bloodbank.cli.session.ended")
 
-    summary = summarize(env)
+    summary = summarize(env, "candystore")
 
     assert summary["title"] == "Session ended - candystore (claude)"
     assert summary["duration"] == "1m 35s"
@@ -38,7 +57,7 @@ def test_agent_session_end_supersedes_cli(sample_event):
         "bloodbank.agent.session.ended",
         "bloodbank.v1.agent.session.ended",
     ):
-        summary = summarize(sample_event(type=event_type))
+        summary = summarize(sample_event(type=event_type), "candystore")
         assert summary["title"] == "Session ended - candystore (claude)"
 
 

@@ -26,6 +26,19 @@ _RENAMED_TYPES = {
 }
 
 
+# The LABEL for a row whose directory belongs to no registered project. Used in
+# prose (a title) and on a chart axis, never as the value of a `project` field --
+# that stays null, so "no project" and a project named "unassigned" cannot be
+# confused. Deliberately not "unknown": the project is not unknown, it is
+# unassigned -- the repo is simply not in the registry yet (CANDYS-68) or the
+# directory is an ephemeral clone (CANDYS-39), and both are actionable.
+UNRESOLVED_PROJECT = "unassigned"
+
+# Substituted by summarize() once the resolved slug is known, so a title and its
+# own `project` field can never disagree.
+_PROJECT_PLACEHOLDER = "\x00project\x00"
+
+
 def canonical_type(event_type: Any) -> str:
     """Collapse either wire shape onto the canonical version-free type."""
     if not isinstance(event_type, str):
@@ -34,9 +47,35 @@ def canonical_type(event_type: Any) -> str:
     return _RENAMED_TYPES.get(stripped, stripped)
 
 
-def summarize(env: dict[str, Any]) -> dict[str, Any]:
+def summarize(env: dict[str, Any], project: str | None = None) -> dict[str, Any]:
+    """Render one envelope for display.
+
+    `project` is the row's already-resolved registry slug (query.PROJECT_EXPR).
+    It is passed in rather than derived here because the answer depends on the
+    PJangler registry, which an envelope cannot see -- and because deriving it
+    in two places is precisely the bug this signature exists to prevent: the
+    list and the detail pane disagreed about the same event on 399 rows in 7
+    days. A caller with no resolved slug (a raw envelope in a test, or
+    /events/<id>/summary before the row is read) gets UNRESOLVED_PROJECT rather
+    than a second guess.
+    """
     fn = SUMMARIZERS.get(canonical_type(env.get("type", "")), _generic)
-    return fn(env)
+    summary = fn(env)
+    # Set on EVERY summary, not only the ones whose summarizer happened to
+    # mention it. Before, the tool summarizers carried no `project` key at all,
+    # so /events reported `james-brennan` for a row whose /summary reported
+    # nothing -- a different flavour of the same disagreement, and one that
+    # makes the feed's row contract non-uniform (CANDYS-41 needs it present).
+    # `project` is DATA and stays nullable: null and a project literally named
+    # "unassigned" must remain distinguishable, and the row-level PROJECT_EXPR
+    # is nullable too -- so /events and /events/<id>/summary report a
+    # byte-identical value for the same row, which is the whole point of this
+    # signature. Only the title, which is prose, gets the label.
+    summary["project"] = project
+    title = summary.get("title")
+    if isinstance(title, str) and _PROJECT_PLACEHOLDER in title:
+        summary["title"] = title.replace(_PROJECT_PLACEHOLDER, project or UNRESOLVED_PROJECT)
+    return summary
 
 
 def _fmt_duration(seconds: Any) -> str:
@@ -75,13 +114,12 @@ def _preview(value: Any, limit: int = 200) -> str | None:
 def _session_ended(env: dict[str, Any]) -> dict[str, Any]:
     data = env.get("data") or {}
     actor = env.get("actor") or {}
-    project = _project_from_data(data)
     cli = actor.get("cli")
     return {
-        "title": f"Session ended - {project} ({cli or 'unknown'})",
+        "title": f"Session ended - {_PROJECT_PLACEHOLDER} ({cli or 'unknown'})",
         "cli": cli,
         "provider": actor.get("provider"),
-        "project": project,
+        "project": None,
         "duration": _fmt_duration(data.get("duration_seconds")),
         "turns": data.get("total_turns"),
         "tools_used": len(data.get("tools_used") or []),
@@ -96,11 +134,10 @@ def _session_ended(env: dict[str, Any]) -> dict[str, Any]:
 def _session_started(env: dict[str, Any]) -> dict[str, Any]:
     data = env.get("data") or {}
     actor = env.get("actor") or {}
-    project = _project_from_data(data)
     return {
-        "title": f"Session started - {project}",
+        "title": f"Session started - {_PROJECT_PLACEHOLDER}",
         "cli": actor.get("cli"),
-        "project": project,
+        "project": None,
         "working_directory": data.get("working_directory"),
         "git_branch": data.get("git_branch"),
         "git_remote": data.get("git_remote"),
@@ -187,25 +224,16 @@ def _heartbeat(env: dict[str, Any]) -> dict[str, Any]:
 
 def _generic(env: dict[str, Any]) -> dict[str, Any]:
     actor = env.get("actor") or {}
-    data = env.get("data") or {}
     return {
         "title": env.get("type", "unknown event"),
         "producer": env.get("producer"),
         "service": env.get("service"),
         "domain": env.get("domain"),
         "cli": actor.get("cli"),
-        "project": _project_from_data(data),
+        "project": None,
     }
 
 
-def _project_from_data(data: dict[str, Any]) -> str:
-    if data.get("project"):
-        return str(data["project"])
-    if data.get("git_remote"):
-        return str(data["git_remote"]).rstrip("/").split("/")[-1].replace(".git", "")
-    if data.get("working_directory"):
-        return str(data["working_directory"]).rstrip("/").split("/")[-1]
-    return "unknown"
 
 
 def _verb_from_type(event_type: str) -> str:

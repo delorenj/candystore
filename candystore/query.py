@@ -7,7 +7,7 @@ from uuid import UUID
 
 from candystore.db import cursor
 from candystore.projects import WORK_DIR_EXPR
-from candystore.summarize import canonical_type, summarize
+from candystore.summarize import UNRESOLVED_PROJECT, canonical_type, summarize
 
 # The `type` column holds two shapes forever: the historical five-token
 # `bloodbank.v1.<domain>.<entity>.<action>` on ~718k rows already in the table,
@@ -51,12 +51,37 @@ SESSION_END_TYPES = frozenset(
     }
 )
 
-PROJECT_EXPR = (
-    "COALESCE(NULLIF(data->>'project', ''), "
-    "NULLIF(regexp_replace(COALESCE(data->>'git_remote', ''), '.*/', ''), ''), "
-    "NULLIF(regexp_replace(COALESCE(data->>'working_directory', ''), '.*/', ''), ''), "
-    "'unknown')"
-)
+# The project an event belongs to: a PJangler registry slug, resolved through
+# project_dir_map (migrations 005/006), or NULL when nothing claims it.
+#
+# This replaced a basename fallback chain that reported worktrees, subdirectories
+# and bare-repo suffixes as projects. It also replaced a SECOND, DIFFERENT
+# implementation in summarize.py, which stripped `.git` where this one did not --
+# so /events said `intelliforia.git` on the card while /events/<id>/summary said
+# `intelliforia` for the same row, on 399 rows in 7 days.
+#
+# `data.project` is consulted, but only if it names a real registry project.
+# Trusting it outright is what the obvious ladder would do, and it is wrong here:
+# measured over the whole table, three of its five distinct values are entire
+# JSON objects serialized as text ({"name": "James Brennan", "slug": ..., ...}),
+# and its highest-volume plain string is `wax` (2,803 rows), which is not a
+# registered project at all. Validating against the registry turns all of that
+# into an honest NULL instead of a JSON blob rendered as a project name.
+#
+# Cost: two correlated lookups, both primary-key probes rather than the prefix
+# scan a naive version would do. Measured 3.5 ms for a 200-row page over the
+# default window (compare 141 s for a correlated longest-prefix subquery, which
+# is exactly why the prefix matching lives in the map instead of here).
+PROJECT_EXPR = f"""COALESCE(
+    (SELECT m.slug FROM project_dir_map m WHERE m.work_dir = {WORK_DIR_EXPR}),
+    (SELECT p.slug FROM projects p WHERE p.slug = NULLIF(data->>'project', ''))
+)"""
+
+# For GROUP BY, where a NULL bucket has no name to render. The row-level
+# expression stays nullable on purpose -- a consumer should be able to tell
+# "no project" from a project literally called "unassigned" -- so the label is
+# applied only where a chart axis needs a string.
+PROJECT_LABEL_EXPR = f"COALESCE({PROJECT_EXPR}, '{UNRESOLVED_PROJECT}')"
 
 # Free-text search (`q`) runs against the generated `search_text` column and its
 # trigram index (migrations/003_search.sql).
@@ -206,6 +231,18 @@ def get_event_record(event_id: str) -> dict[str, Any] | None:
     return _preview_from_row(row) if row else None
 
 
+def get_event_with_project(event_id: str) -> tuple[dict[str, Any], str | None] | None:
+    """The raw envelope plus its resolved project slug.
+
+    /events/<id>/summary needs both: the envelope to summarize, and the slug so
+    its `project` agrees with the one /events reported for the same row.
+    """
+    with cursor() as cur:
+        cur.execute(f"SELECT raw, {PROJECT_EXPR} FROM events WHERE id = %s", (event_id,))
+        row = cur.fetchone()
+    return (row[0], row[1]) if row else None
+
+
 def get_event(event_id: str) -> dict[str, Any] | None:
     with cursor() as cur:
         cur.execute("SELECT raw FROM events WHERE id = %s", (event_id,))
@@ -214,8 +251,9 @@ def get_event(event_id: str) -> dict[str, Any] | None:
 
 
 def get_session_events(correlationid: str) -> list[dict[str, Any]]:
-    sql = """
-    SELECT id, type, time, producer, service, domain, actor, data, correlationid, raw
+    sql = f"""
+    SELECT id, type, time, producer, service, domain, actor, data, correlationid, raw,
+           {PROJECT_EXPR} AS project
     FROM events
     WHERE correlationid::text = %s
     ORDER BY time ASC
@@ -238,7 +276,8 @@ def get_session_events(correlationid: str) -> list[dict[str, Any]]:
                 "actor": row[6],
                 "data": row[7],
                 "correlationid": str(row[8]) if row[8] else None,
-                "summary": summarize(raw),
+                "project": row[10],
+                "summary": summarize(raw, row[10]),
                 "raw": raw,
             }
         )
@@ -286,7 +325,10 @@ def session_summary(correlationid: str, events: list[dict[str, Any]]) -> dict[st
         "ended_at": ended_at,
         "duration_seconds": reported_duration,
         "cli": actor.get("cli"),
-        "project": _project_from_data(data),
+        # Read off the rows, which arrive already resolved from
+        # get_session_events. session_summary stays pure (no DB), and there is
+        # still exactly one definition of "project" in the codebase.
+        "project": _session_project(events),
         "events_count": len(events),
         "turns": total_turns,
         "tools_requested": canonical_counts.get(TOOL_REQUESTED_TYPE, 0),
@@ -301,7 +343,7 @@ def heatmap(
     to_time: str | None = None,
 ) -> list[dict[str, Any]]:
     group_col = {
-        "project": PROJECT_EXPR,
+        "project": PROJECT_LABEL_EXPR,
         "cli": "COALESCE(actor->>'cli', 'unknown')",
         "domain": "domain",
     }.get(group_by, "domain")
@@ -410,7 +452,7 @@ def known_project_slugs() -> set[str]:
 
 def by_project(from_time: str | None = None, to_time: str | None = None) -> list[dict[str, Any]]:
     sql = f"""
-    SELECT {PROJECT_EXPR} AS project, COUNT(*) AS count
+    SELECT {PROJECT_LABEL_EXPR} AS project, COUNT(*) AS count
     FROM events
     WHERE time >= %s AND time <= %s
     GROUP BY project
@@ -595,7 +637,7 @@ def _as_uuid(value: str) -> str | None:
 
 def _preview_from_row(row: tuple[Any, ...]) -> dict[str, Any]:
     raw = row[9]
-    summary = summarize(raw)
+    summary = summarize(raw, row[10])
     actor = row[6] or {}
     return {
         "id": str(row[0]),
@@ -611,6 +653,20 @@ def _preview_from_row(row: tuple[Any, ...]) -> dict[str, Any]:
         "project": row[10],
         "summary": summary,
     }
+
+
+def _session_project(events: list[dict[str, Any]]) -> str | None:
+    """The session's project: the first resolved slug among its events.
+
+    Scanning rather than reading events[0] because a session can legitimately
+    start outside a registered project and move into one -- 472 of 2,204
+    measured sessions span more than one directory. `None` when nothing in the
+    session resolves.
+    """
+    for event in events:
+        if event.get("project"):
+            return str(event["project"])
+    return None
 
 
 def _iso(value: Any) -> str | None:
@@ -632,11 +688,3 @@ def _duration_seconds(started_at: str | None, ended_at: str | None) -> int | Non
     return int((end - start).total_seconds())
 
 
-def _project_from_data(data: dict[str, Any]) -> str:
-    if data.get("project"):
-        return str(data["project"])
-    if data.get("git_remote"):
-        return str(data["git_remote"]).rstrip("/").split("/")[-1].replace(".git", "")
-    if data.get("working_directory"):
-        return str(data["working_directory"]).rstrip("/").split("/")[-1]
-    return "unknown"

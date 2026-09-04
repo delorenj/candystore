@@ -26,6 +26,7 @@ from candystore.query import (
     daily,
     get_event,
     get_event_record,
+    get_event_with_project,
     get_session_events,
     get_session_summary,
     heatmap,
@@ -137,11 +138,15 @@ class Handler(BaseHTTPRequestHandler):
 
         if path.startswith("/events/") and path.endswith("/summary"):
             event_id = path.split("/")[-2]
-            ev = get_event(event_id)
-            if ev is None:
+            # The resolved slug comes back with the envelope so this summary's
+            # `project` cannot disagree with the one /events reported for the
+            # same row -- which it did, on 399 rows in 7 days.
+            found = get_event_with_project(event_id)
+            if found is None:
                 self._send_empty(404)
                 return
-            self._send_json(200, {"summary": summarize(ev), "raw": ev})
+            ev, project = found
+            self._send_json(200, {"summary": summarize(ev, project), "raw": ev})
             return
 
         if path.startswith("/events/") and path.endswith("/raw"):
