@@ -580,9 +580,13 @@ _DESTRUCTIVE_SQL = re.compile(
     r"\b(?:TRUNCATE\b"
     r"|DROP\s+(?:TABLE|DATABASE|SCHEMA|INDEX|VIEW|MATERIALIZED)\b"
     r"|DELETE\s+FROM\b"
-    # The shell spellings. `subprocess.run(["psql", "-c", ...])` and dropdb
-    # reach the same database with none of the SQL keywords on the line.
-    r"|\bdropdb\b|\bpg_restore\b|\bpsql\b)",
+    # The shell spellings, which reach the same database with none of the SQL
+    # keywords on the line. `psql` itself is deliberately NOT here: it is the
+    # ordinary way to READ this database and the word appears in comments, docs
+    # and shell helpers constantly, so banning the bare token fails the entire
+    # suite at collection over a mention. The destructive verbs above still
+    # match inside a `psql -c "..."` string, which is the case that matters.
+    r"|\bdropdb\b|\bpg_restore\b)",
     re.IGNORECASE,
 )
 _SQL_GUARD_PRAGMA = "sql-guard: reviewed"
