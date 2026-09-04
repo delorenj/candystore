@@ -212,6 +212,41 @@ window, which is honest and cheap), all of E13, all of E14.
 
 ---
 
+## Progress
+
+**2026-09-04 — Epic E8 (Project Truth) shipped and verified live.** CANDYS-33/34/35/36/37 → Done.
+The story's first click works: pick a registry project, see its events, and every row reports the
+same project the filter used.
+
+| | before | after |
+|---|---|---|
+| project picker (`/projects`) | 11.59 s, garbage buckets | **0.29 s**, exactly the 24 registry slugs |
+| first click (`?project=…&limit=200`) | 8.38 s | **0.032 s** |
+| unbounded `/events` page | 8.45 s (4.02 s of unread `COUNT(*)`) | **0.32 s** |
+| query plan | `Parallel Seq Scan` | `Bitmap Index Scan` on `idx_events_time` |
+| `project` agreement across endpoints | 38 of 50 rows disagreed | **0 of 60** |
+
+Three corrections to this plan, found while building:
+
+1. **`data.project` cannot be rung L1.** Measured over the whole table, three of its five distinct
+   values are entire JSON objects serialized as text (`{"name": "James Brennan", "slug": …}`) and its
+   highest-volume plain string is `wax` (2,803 rows), which is not a registered project. Trusting it
+   would render a JSON blob as a project name. It is honored only when it names a real registry slug.
+2. **There were three project derivations, not two.** `query.py` had its own `_project_from_data`
+   feeding `session_summary`, and the tool summarizers carried no `project` key at all. All
+   consolidated; `project` is now nullable data everywhere and `unassigned` is a label used only in
+   prose and on chart axes.
+3. **CANDYS-38's premise is weaker than written.** CANDYS-33's time bound got the click to 166 ms
+   with zero DDL, and CANDYS-36 then took it to 32 ms. The `work_dir` generated column would buy
+   single-digit milliseconds for a ~2.5-minute `ACCESS EXCLUSIVE` lock. Recommend closing it
+   won't-do unless a measurement asks.
+
+Resolution rate: 90.44% of placed 7-day events reach a registry project (135,718 `repo-path` +
+11,482 `repo-subpath` + 1,745 `sibling-worktree` of 164,697). The residual is dominated by repos
+never registered — CANDYS-68 moves it toward ~1.5%.
+
+---
+
 ## 4. Spikes
 
 | Spike | Question | Unblocks | Timebox |
