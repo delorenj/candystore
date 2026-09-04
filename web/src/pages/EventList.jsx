@@ -9,6 +9,8 @@ const SEARCH_DEBOUNCE_MS = 250;
 export default function EventList() {
   const [events, setEvents] = useState([]);
   const [total, setTotal] = useState(0);
+  const [totalCapped, setTotalCapped] = useState(false);
+  const [window_, setWindow] = useState(null);
   const [status, setStatus] = useState("loading");
   const [filters, setFilters] = useState({ from: "", to: "", cli: "", project: "", scope: "" });
   const [search, setSearch] = useState("");
@@ -22,7 +24,10 @@ export default function EventList() {
   }, [search]);
 
   const query = useMemo(() => {
-    const params = new URLSearchParams({ limit: "100" });
+    // `total=1` because this view renders the count. It comes back capped at
+    // 10k (see query.py COUNT_CAP) -- an exact figure over the whole trail
+    // costs seconds and reads identically to "10,000+".
+    const params = new URLSearchParams({ limit: "100", total: "1" });
     if (filters.from) params.set("from", new Date(filters.from).toISOString());
     if (filters.to) params.set("to", new Date(filters.to).toISOString());
     if (filters.cli) params.set("cli", filters.cli);
@@ -40,7 +45,9 @@ export default function EventList() {
       .then((data) => {
         if (cancelled) return;
         setEvents(data.events || []);
-        setTotal(data.total || 0);
+        setTotal(data.total ?? 0);
+        setTotalCapped(Boolean(data.total_capped));
+        setWindow(data.window || null);
         setStatus("ready");
       })
       .catch(() => {
@@ -53,6 +60,11 @@ export default function EventList() {
 
   const searching = searchIsRunnable(activeSearch);
   const settling = search !== activeSearch;
+  // The server applied a window the user did not ask for, so say so. Without
+  // this, "no events" and "no events in the last day" look identical -- on an
+  // audit trail whose whole point is history, that is the difference between
+  // an answer and a lie.
+  const defaultWindow = Boolean(window_?.from) && !filters.from && !filters.to;
 
   return (
     <div className="space-y-4">
@@ -68,7 +80,8 @@ export default function EventList() {
             status
           ) : (
             <>
-              {total.toLocaleString()} {total === 1 ? "event" : "events"}
+              {total.toLocaleString()}
+              {totalCapped ? "+" : ""} {total === 1 ? "event" : "events"}
               {searching ? (
                 <>
                   {" matching "}
@@ -78,9 +91,14 @@ export default function EventList() {
             </>
           )}
         </span>
-        {status === "ready" && total > events.length ? (
-          <span className="text-zinc-500">showing the {events.length} most recent</span>
-        ) : null}
+        <span className="flex items-center gap-3 text-zinc-500">
+          {status === "ready" && defaultWindow ? (
+            <span title="Add a From date to search further back">last 24 hours</span>
+          ) : null}
+          {status === "ready" && (totalCapped || total > events.length) ? (
+            <span>showing the {events.length} most recent</span>
+          ) : null}
+        </span>
       </div>
       <div className="grid gap-3">
         {events.map((event) => (
@@ -90,8 +108,10 @@ export default function EventList() {
       {status === "ready" && events.length === 0 ? (
         <div className="rounded-md border border-line bg-panel p-6 text-sm text-zinc-400">
           {searching
-            ? `Nothing matches "${activeSearch.trim()}" with the current filters. Search covers the event type, producer, project, working directory, branch, tool name, status and the start of any prompt, arguments or error text.`
-            : "No events match the current filters."}
+            ? `Nothing matches "${activeSearch.trim()}"${defaultWindow ? " in the last 24 hours" : " with the current filters"}. Search covers the event type, producer, project, working directory, branch, tool name, status and the start of any prompt, arguments or error text.${defaultWindow ? " Set a From date to search the whole trail." : ""}`
+            : defaultWindow
+              ? "No events in the last 24 hours. Set a From date to look further back."
+              : "No events match the current filters."}
         </div>
       ) : null}
     </div>

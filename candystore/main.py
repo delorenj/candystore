@@ -18,7 +18,9 @@ from candystore import stats
 from candystore.db import check_connection, init_schema, record_dead_letter
 from candystore.ingest import handle_event, known_event_routes, subscribe_response
 from candystore.query import (
+    COUNT_CAP,
     SearchError,
+    applied_window,
     by_cli,
     by_project,
     daily,
@@ -78,21 +80,34 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 self._send_json(400, {"error": f"invalid limit or offset: {exc}"})
                 return
+            # Browsing is bounded by default and the count is opt-in; both are
+            # policies of the HTTP surface, not of the query (query.py explains
+            # the measurements). `?total=1` buys a capped count.
+            correlationid = _first(qs, "correlationid")
+            q = _first(qs, "q")
+            from_time, to_time = applied_window(
+                _first(qs, "from"),
+                _first(qs, "to"),
+                correlationid=correlationid,
+                q=q,
+            )
             try:
                 result = list_events(
                     type=_first(qs, "type"),
                     domain=_first(qs, "domain"),
-                    from_time=_first(qs, "from"),
-                    to_time=_first(qs, "to"),
-                    correlationid=_first(qs, "correlationid"),
+                    from_time=from_time,
+                    to_time=to_time,
+                    correlationid=correlationid,
                     producer=_first(qs, "producer"),
                     service=_first(qs, "service"),
                     cli=_first(qs, "cli"),
                     project=_first(qs, "project"),
                     scope=_first(qs, "scope"),
-                    q=_first(qs, "q"),
+                    q=q,
                     limit=limit,
                     offset=offset,
+                    total=_flag(qs, "total"),
+                    count_cap=COUNT_CAP,
                 )
             except SearchError as exc:
                 # A `q` the index cannot serve is the caller's to fix; say so
@@ -312,6 +327,17 @@ def main() -> int:
 def _first(qs: dict[str, list[str]], key: str) -> str | None:
     vals = qs.get(key)
     return vals[0] if vals else None
+
+
+# Accepts the spellings a querystring actually arrives in. `?total` with no
+# value parses to [""] rather than being absent, and someone writing it by hand
+# means yes -- so a bare flag is true.
+_TRUTHY = frozenset({"", "1", "true", "yes", "on"})
+
+
+def _flag(qs: dict[str, list[str]], key: str) -> bool:
+    value = _first(qs, key)
+    return value is not None and value.strip().lower() in _TRUTHY
 
 
 def _json_default(value: Any) -> str:

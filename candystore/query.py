@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -67,6 +67,26 @@ PROJECT_EXPR = (
 # served slowly; the caller gets a 400 that says so.
 SEARCH_MIN_TERM = 3
 
+# An unbounded `/events` is a sequential scan over the whole table -- 886k rows
+# and ~4.9 GB of TOAST at the time of writing -- because the useful filters are
+# jsonb-derived expressions the planner cannot estimate. Measured on the live
+# table: a project-filtered page cost 8.45 s, split 4,024 ms for the COUNT(*)
+# and 4,049 ms for the LIMIT 100 SELECT, against 84 ms for a bare
+# `COUNT(*) FROM events`. The same query bound to 24 h with LIMIT 200 and no
+# count came back in 166 ms.
+#
+# So interactive browsing gets a default window, and the count becomes opt-in
+# and capped. Both are policies of the *browse*, not of the query: a caller
+# that names its own range means it, and `list_events` keeps answering exactly
+# what it is asked. `applied_window()` is where the policy lives so that the
+# HTTP layer and any future CLI share one definition of "recent".
+DEFAULT_WINDOW_HOURS = 24
+
+# Cap for an interactive count. Answering "more than 10,000" costs an index
+# scan that stops early; answering "118,745" costs a full scan of the matches.
+# Nothing in the UI renders the difference, so it is not worth 4 seconds.
+COUNT_CAP = 10_000
+
 
 class SearchError(ValueError):
     """A `q` the search index cannot serve. Distinct from a bare ValueError so
@@ -97,7 +117,19 @@ def list_events(
     q: str | None = None,
     limit: int = 100,
     offset: int = 0,
+    total: bool = True,
+    count_cap: int | None = None,
 ) -> dict[str, Any]:
+    """List events matching the filters, newest first.
+
+    `total=False` skips the count entirely and returns `total: None`.
+    `count_cap=N` stops counting at N+1 and sets `total_capped`, so the answer
+    becomes "at least N" instead of an exact figure. Leaving `count_cap=None`
+    on a query with no time bound is the 4-second, 25 GB-of-buffers path
+    described above -- deliberate for a caller that genuinely needs the exact
+    number, wrong for anything interactive. The HTTP layer passes
+    `count_cap=COUNT_CAP`.
+    """
     where, params = _filters(
         type=type,
         domain=domain,
@@ -114,24 +146,50 @@ def list_events(
     limit = max(1, min(int(limit), 1000))
     offset = max(0, int(offset))
 
-    count_sql = f"SELECT COUNT(*) FROM events WHERE {' AND '.join(where)}"
+    clause = " AND ".join(where)
     select_sql = f"""
     SELECT id, type, time, producer, service, domain, actor, data, correlationid, raw,
            {PROJECT_EXPR} AS project
     FROM events
-    WHERE {' AND '.join(where)}
+    WHERE {clause}
     ORDER BY time DESC
     LIMIT %s OFFSET %s
     """
 
+    # Counting through a bounded subquery lets Postgres stop as soon as the cap
+    # is reached instead of finding every match. `count_cap` is an int from
+    # this module, never caller text, but it is still bound as a parameter
+    # rather than interpolated -- the next person to touch this line should not
+    # have to work out which of the two f-strings is safe.
+    if count_cap is None:
+        count_sql = f"SELECT COUNT(*) FROM events WHERE {clause}"
+        count_params = list(params)
+    else:
+        count_sql = f"SELECT COUNT(*) FROM (SELECT 1 FROM events WHERE {clause} LIMIT %s) capped"
+        count_params = [*params, count_cap + 1]
+
     with cursor() as cur:
-        cur.execute(count_sql, params)
-        total = cur.fetchone()[0]
+        counted: int | None = None
+        if total:
+            cur.execute(count_sql, count_params)
+            counted = cur.fetchone()[0]
         cur.execute(select_sql, [*params, limit, offset])
         rows = cur.fetchall()
 
     events = [_preview_from_row(row) for row in rows]
-    return {"events": events, "total": total, "limit": limit, "offset": offset}
+    return {
+        "events": events,
+        "total": counted,
+        # True means "at least `total`", not "exactly". A consumer that renders
+        # the number must render the distinction too, or it reports 10,000
+        # events as fact when there are 118,745.
+        "total_capped": bool(count_cap is not None and counted == count_cap + 1),
+        "limit": limit,
+        "offset": offset,
+        # The applied window, echoed so a caller can see the default it got
+        # rather than inferring it. Both null means "the whole trail".
+        "window": {"from": from_time, "to": to_time},
+    }
 
 
 def get_event_record(event_id: str) -> dict[str, Any] | None:
@@ -409,6 +467,59 @@ def _search_clause(q: str) -> tuple[str, list[Any]]:
     clause = " AND ".join(["search_text ILIKE %s"] * len(terms))
     params = [f"%{term.translate(_LIKE_ESCAPES)}%" for term in terms]
     return f"({clause})", params
+
+
+def applied_window(
+    from_time: str | None,
+    to_time: str | None,
+    *,
+    correlationid: str | None = None,
+    q: str | None = None,
+    hours: int = DEFAULT_WINDOW_HOURS,
+    now: datetime | None = None,
+) -> tuple[str | None, str | None]:
+    """Resolve the time window an interactive browse should actually run over.
+
+    Returns the (from, to) to hand to `list_events`. Pure: no DB, so the policy
+    is testable without a database (see tests/test_window.py).
+
+    Exactly one thing is ever invented: a missing `from`. `to` is passed
+    through untouched, because a floor is what makes a query cheap and a
+    ceiling is not -- `?to=2026-01-01` with no floor is still a scan of every
+    row before that date, which is the case this function exists to prevent.
+
+    The invented floor is anchored to `to_time` when there is one, not to
+    wall-clock now. A now-relative floor under `?to=2026-01-01` would describe
+    a window that ends eight months before it starts, return nothing, and read
+    as "no events" instead of "you asked for an empty range".
+
+    An explicit `from` is never overridden -- naming a floor is a statement
+    that you want that floor.
+
+    Point lookups are exempt, and this is the part that is easy to get wrong.
+    `correlationid` and a bare-UUID `q` both resolve through a btree index to a
+    handful of rows, and they are how the UI answers its two most common
+    questions: pasting an event or session id into the search box, and
+    following a session drill-down. Windowing them would break "paste an id,
+    find the event" for anything older than a day -- which, on an audit trail,
+    is nearly everything.
+    """
+    if from_time:
+        return from_time, to_time
+    if correlationid or (q and _as_uuid(q.strip())):
+        return None, to_time
+    end = _parse_time(to_time) or (now or datetime.now(UTC))
+    return (end - timedelta(hours=hours)).isoformat(), to_time
+
+
+def _parse_time(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, AttributeError, TypeError):
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 def _as_uuid(value: str) -> str | None:

@@ -63,6 +63,41 @@ def test_event_queries_and_summaries(db, sample_event):
     assert {item["project"] for item in by_project()} >= {"candystore", "other"}
 
 
+def test_capped_count_reports_at_least_not_exactly(db, sample_event):
+    """A capped count must be legible as a floor, or the UI renders "10,000
+    events" as fact when there are 118,745. `count_cap` counts through a
+    bounded subquery so Postgres stops early instead of finding every match."""
+    for index in range(5):
+        event = sample_event(id=f"550e8400-e29b-41d4-a716-44665544c{index:03d}")
+        assert insert_event(event) is True
+
+    exact = list_events(limit=1)
+    assert exact["total"] == 5
+    assert exact["total_capped"] is False
+
+    # Cap below the true count: the number is the cap, and the flag says so.
+    capped = list_events(limit=1, count_cap=3)
+    assert capped["total"] == 4
+    assert capped["total_capped"] is True
+
+    # Cap above it: the number is exact, and the flag must not cry wolf.
+    under = list_events(limit=1, count_cap=50)
+    assert under["total"] == 5
+    assert under["total_capped"] is False
+
+    # Exactly at the cap is the off-by-one that matters -- 5 rows with cap 5 is
+    # an exact answer, not a floor.
+    boundary = list_events(limit=1, count_cap=5)
+    assert boundary["total"] == 5
+    assert boundary["total_capped"] is False
+
+    # Skipping the count must not cost one, and must not fake one either.
+    none = list_events(limit=1, total=False, count_cap=3)
+    assert none["total"] is None
+    assert none["total_capped"] is False
+    assert len(none["events"]) == 1
+
+
 def test_scope_filter_uses_domain_and_entity_not_repo_slug(db, sample_event):
     valid_decision = sample_event(
         id="550e8400-e29b-41d4-a716-446655440010",
