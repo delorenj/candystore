@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from candystore.db import insert_event
+from candystore.db import cursor, insert_event
 from candystore.query import SEARCH_MIN_TERM, SearchError, list_events
 
 SESSION = "550e8400-e29b-41d4-a716-4466554aa000"
@@ -181,6 +181,63 @@ def test_search_text_is_bounded_per_field(db, sample_event):
 
     assert _ids(list_events(q="needlehead")) == {event["id"]}
     assert list_events(q="needletail")["total"] == 0
+
+
+def test_search_reaches_deep_into_a_long_prompt(db, sample_event):
+    """prompt_text carries a 4000-char cap while everything else prose-shaped is
+    at 256, because prompt-bearing rows are only 0.69% of the trail -- generosity
+    there is nearly free. Assert the depth actually reached, not just that short
+    prompts work."""
+    turn = sample_event(
+        id="550e8400-e29b-41d4-a716-4466554aa070",
+        type="bloodbank.conversation.turn.started",
+        domain="conversation",
+        data={
+            "prompt_text": (
+                "NEEDLEOPEN " + ("filler word " * 240) + " NEEDLEDEEP "
+                + ("filler word " * 200) + " NEEDLEBEYOND"
+            )
+        },
+    )
+    assert insert_event(turn) is True
+
+    # ~2900 chars in -- unreachable under the old 256-char prompt cap.
+    assert _ids(list_events(q="needleopen")) == {turn["id"]}
+    assert _ids(list_events(q="needledeep")) == {turn["id"]}
+    # Past 4000, and therefore genuinely gone.
+    assert list_events(q="needlebeyond")["total"] == 0
+
+
+def test_search_text_expression_carries_no_dead_fields(db):
+    """004_search_caps.sql duplicates 003's expression to carry an already-
+    migrated database across, so the two files can drift. This asserts the END
+    STATE instead of either file: whichever migration path built the column, it
+    must land on the measured policy.
+
+    `input_preview` is the specific regression to catch -- it was in the first
+    expression, is present on 0 of 871,438 live rows, and cost a 256-char slot
+    on every row until it was measured."""
+    with cursor() as cur:
+        cur.execute(
+            """
+            SELECT pg_get_expr(d.adbin, d.adrelid)
+            FROM pg_attrdef d
+            JOIN pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum
+            WHERE d.adrelid = 'events'::regclass AND a.attname = 'search_text'
+            """
+        )
+        row = cur.fetchone()
+
+    assert row is not None, "events.search_text has no generation expression"
+    expression = row[0]
+
+    for dead in ("input_preview", "payload"):
+        assert dead not in expression, f"{dead} is back in the haystack"
+    # The fields that carry the search signal must still be there.
+    for live in ("arguments", "prompt_text", "tool_name", "working_directory"):
+        assert live in expression, f"{live} fell out of the haystack"
+    assert "4000" in expression, "prompt_text is not on the 4000-char cap"
+    assert "4096" in expression, "the total cap is not 4096"
 
 
 def _ids(result: dict) -> set[str]:

@@ -11,7 +11,7 @@ Candystore is the Bloodbank durable event audit trail. Keep it aligned with
 - Plain SQL migrations in `migrations/`
 - React/Vite/Tailwind UI in `web/`, built into `static/`
 - Free-text search over a generated `search_text` column indexed with a
-  `pg_trgm` GIN index (`migrations/003_search.sql`)
+  `pg_trgm` GIN index (`migrations/003_search.sql`, re-capped by `004`)
 - No FastAPI, RabbitMQ consumer, SQLAlchemy, or Alembic in this implementation
 - PLANNED: <https://tanstack.com/store/latest> as a state management library
 
@@ -71,8 +71,21 @@ events between two databases.
   means "traefik work in holocene" and not one literal phrase. Pasting an event
   or session UUID resolves it exactly. Terms under 3 characters are refused with
   a 400 -- the trigram index cannot serve them and the query would degrade to a
-  full scan of the trail. The haystack is capped at 512 characters per event, so
-  deep prose (a long tool `arguments` or hook `payload`) is searchable only near
-  its start.
+  full scan of the trail.
+
+  **What is in the haystack was measured, not guessed** (see `004_search_caps.sql`).
+  The trail is 95% tool calls: `arguments` is on 89.4% of rows and `prompt_text`
+  on 0.69%, so tool arguments are the most valuable field in the index, not the
+  noisy one -- dropping them takes a search for `query.py` from 291 hits to 2.
+  Two fields were removed for being dead weight: `input_preview` (present on 0 of
+  871,438 rows) and `payload` (85.5% UUID, 71% a restatement of `arguments`).
+  Net: a 273 MB index, 14% smaller than the first attempt, that searches more.
+
+  Two bounds remain, and they are the reason a search can miss:
+  - **`arguments` is capped at 256 characters.** 361,298 rows carry a longer one,
+    so a flag or path late in a long shell pipeline is invisible. Measured cost
+    of widening it to 512: +62.6 MB of text, ~+55 MB of index. Not applied.
+  - **`prompt_text` is capped at 4000**, which fully indexes 88.5% of the 6,012
+    prompt-bearing rows. The rest are enormous (max 287 KB).
 
 - [TODO] SO many more things! Keep this list growing!
