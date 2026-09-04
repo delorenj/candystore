@@ -153,6 +153,21 @@ def test_what_cannot_be_resolved_is_left_unresolved(projects, work_dir):
     assert resolve(work_dir, projects) == (None, "unresolved")
 
 
+def test_an_unrenderable_name_falls_back_to_the_slug():
+    """The 33GOD project's registry name is literally "." -- truthy, so a bare
+    `name or slug` keeps it, and the picker renders a bullet. Measured: 1 of the
+    24 live projects is in this state."""
+    payload = {
+        "projects": {
+            "project": {"name": ".", "repo_path": "/home/delorenj/code/33GOD"},
+            "blank": {"name": "   ", "repo_path": "/home/delorenj/code/blank"},
+            "fine": {"name": "James Brennan", "repo_path": "/home/delorenj/code/james-brennan"},
+        }
+    }
+    names = {p.slug: p.name for p in parse_registry(payload)}
+    assert names == {"project": "project", "blank": "blank", "fine": "James Brennan"}
+
+
 def test_a_project_with_no_repo_path_is_skipped_not_fatal():
     payload = {
         "projects": {

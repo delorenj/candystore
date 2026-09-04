@@ -26,9 +26,15 @@ export default function EventList() {
 
   // The registry does not change when a filter does, so this is fetched once
   // rather than riding along with every query.
+  //
+  // 24h, matching the feed's own default window, so the number beside a project
+  // is the number you get when you pick it. Asking for 7d here read better in a
+  // dropdown and then lied: "Bloodbank (3,669)" followed by an empty feed,
+  // because the events were older than a day. A proper shared window arrives
+  // with the rebuilt screen (CANDYS-52); until then the two agree by matching.
   useEffect(() => {
     let cancelled = false;
-    getJson("/projects?window=7d")
+    getJson("/projects?window=24h")
       .then((data) => {
         if (!cancelled) setProjects(data.projects || []);
       })

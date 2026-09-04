@@ -20,6 +20,7 @@ import logging
 import shutil
 import subprocess
 from dataclasses import dataclass
+from typing import Any
 
 from candystore.db import cursor
 
@@ -111,7 +112,7 @@ def parse_registry(payload: dict) -> list[Project]:
         projects.append(
             Project(
                 slug=slug,
-                name=record.get("name") or slug,
+                name=_label(record.get("name"), slug),
                 repo_path=repo_path,
                 ticket_prefix=(provider.get("identifier") or "").strip(),
             )
@@ -119,6 +120,17 @@ def parse_registry(payload: dict) -> list[Project]:
     if not projects:
         raise RegistryError("registry contains no projects with a repo_path")
     return projects
+
+
+def _label(name: Any, slug: str) -> str:
+    """A name a picker can render, falling back to the slug.
+
+    `or slug` is not enough: the 33GOD project's registry name is literally
+    ".", which is truthy and renders as a bullet in a dropdown. Anything with
+    no alphanumeric character in it is not a label.
+    """
+    text = (name or "").strip()
+    return text if any(char.isalnum() for char in text) else slug
 
 
 def resolve(work_dir: str, projects: list[Project]) -> tuple[str | None, str]:
