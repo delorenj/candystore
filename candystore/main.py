@@ -425,7 +425,12 @@ class Handler(BaseHTTPRequestHandler):
     def _serve_spa_route(self, path: str) -> bool:
         if path == "/" or path == "/index.html":
             return self._serve_index()
-        if path in {"/heatmap", "/sessions"}:
+        if path in {"/heatmap", "/sessions", "/projects"}:
+            return self._serve_index()
+        # `/projects/<slug>` is the feed screen. It has to be listed BEFORE the
+        # API's own /projects handler is reached, and it is only taken when the
+        # request actually wants HTML -- `curl /projects` still gets JSON.
+        if path.startswith("/projects/"):
             return self._serve_index()
         if path.startswith("/sessions/"):
             return self._serve_index()

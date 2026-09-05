@@ -1,14 +1,14 @@
 import { Suspense, lazy } from "react";
 import { Link, NavLink, Route, BrowserRouter as Router, Routes } from "react-router-dom";
 import candystoreLogo from "./assets/candystore-logo.png";
-import EventList from "./pages/EventList.jsx";
+import ProjectFeed from "./pages/ProjectFeed.jsx";
 
 const EventDetail = lazy(() => import("./pages/EventDetail.jsx"));
 const HeatMap = lazy(() => import("./pages/HeatMap.jsx"));
 const SessionTimeline = lazy(() => import("./pages/SessionTimeline.jsx"));
 
 const navItems = [
-  { to: "/", label: "Events" },
+  { to: "/projects", label: "Feed" },
   { to: "/heatmap", label: "Heatmap" },
   { to: "/sessions", label: "Sessions" },
 ];
@@ -18,7 +18,7 @@ export default function App() {
     <Router>
       <div className="min-h-screen bg-ink text-zinc-100">
         <header className="border-b border-line bg-panel">
-          <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-4 px-4 py-3 sm:px-6">
+          <div className="mx-auto flex max-w-[110rem] flex-wrap items-center gap-4 px-4 py-3 sm:px-6">
             <Link
               to="/"
               className="focus-ring rounded bg-zinc-100 px-3 py-1.5 shadow-sm ring-1 ring-white/10 transition hover:bg-white"
@@ -44,10 +44,12 @@ export default function App() {
             </nav>
           </div>
         </header>
-        <main className="mx-auto max-w-7xl px-4 py-5 sm:px-6">
+        <main className="mx-auto max-w-[110rem] px-4 py-4 sm:px-6">
           <Suspense fallback={<div className="text-sm text-zinc-400">loading</div>}>
             <Routes>
-              <Route path="/" element={<EventList />} />
+              <Route path="/" element={<ProjectFeed />} />
+              <Route path="/projects" element={<ProjectFeed />} />
+              <Route path="/projects/:slug" element={<ProjectFeed />} />
               <Route path="/events/:id" element={<EventDetail />} />
               <Route path="/heatmap" element={<HeatMap />} />
               <Route path="/sessions" element={<SessionTimeline />} />
