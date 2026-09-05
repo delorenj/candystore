@@ -19,6 +19,7 @@ from candystore.db import check_connection, init_schema, record_dead_letter
 from candystore.ingest import handle_event, known_event_routes, subscribe_response
 from candystore.query import (
     COUNT_CAP,
+    LENSES,
     PROVENANCE_CLASSES,
     SearchError,
     applied_window,
@@ -33,7 +34,8 @@ from candystore.query import (
     heatmap,
     known_project_slugs,
     list_classes,
-    list_events,
+    list_feed,
+    list_lenses,
     list_projects,
 )
 from candystore.summarize import summarize
@@ -123,6 +125,21 @@ class Handler(BaseHTTPRequestHandler):
                     },
                 )
                 return
+            lens = _first(qs, "lens")
+            bad_lenses = [
+                value.strip()
+                for value in (lens or "").split(",")
+                if value.strip() and value.strip() not in LENSES
+            ]
+            if bad_lenses:
+                self._send_json(
+                    400,
+                    {
+                        "error": f"unknown lens {', '.join(repr(b) for b in bad_lenses)}",
+                        "valid": sorted(LENSES),
+                    },
+                )
+                return
             from_time, to_time = applied_window(
                 _first(qs, "from"),
                 _first(qs, "to"),
@@ -130,7 +147,10 @@ class Handler(BaseHTTPRequestHandler):
                 q=q,
             )
             try:
-                result = list_events(
+                result = list_feed(
+                    # `tools=0` hides tool ROWS by folding them; it never
+                    # removes them from the counts (query.list_feed).
+                    tools=_first(qs, "tools") not in ("0", "false", "no", "off"),
                     type=_first(qs, "type"),
                     domain=_first(qs, "domain"),
                     from_time=from_time,
@@ -141,6 +161,7 @@ class Handler(BaseHTTPRequestHandler):
                     cli=_first(qs, "cli"),
                     project=project,
                     provenance=provenance,
+                    lens=lens,
                     scope=_first(qs, "scope"),
                     q=q,
                     limit=limit,
@@ -217,6 +238,19 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
             self._send_json(200, list_projects(window_hours=hours))
+            return
+
+        if path == "/lenses":
+            qs = parse_qs(parsed.query)
+            window = _first(qs, "window") or "24h"
+            hours = _WINDOW_HOURS.get(window)
+            if hours is None:
+                self._send_json(
+                    400,
+                    {"error": f"unknown window {window!r}", "valid": sorted(_WINDOW_HOURS)},
+                )
+                return
+            self._send_json(200, list_lenses(window_hours=hours))
             return
 
         if path == "/classes":

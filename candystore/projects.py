@@ -183,6 +183,49 @@ def resolve(work_dir: str, projects: list[Project]) -> tuple[str | None, str]:
     return None, "unresolved"
 
 
+def aliases_for(project: Project) -> dict[str, str]:
+    """Every name that unambiguously means this project, lowercased.
+
+    Three sources, because the trail refers to a project by whichever one the
+    producer happened to have: the registry slug, the repo directory name (the
+    Plane webhook's `data.repo` uses this -- `bloodbank`, not `bb`), and the
+    display name. Collisions between projects are dropped by the caller rather
+    than resolved arbitrarily; guessing which project someone meant is exactly
+    the failure this whole subsystem exists to avoid.
+    """
+    candidates = {
+        project.slug.lower(): "slug",
+        project.dir_name.lower(): "dir_name",
+        project.name.lower(): "name",
+    }
+    return {alias: source for alias, source in candidates.items() if alias}
+
+
+def build_alias_map(projects: list[Project]) -> dict[str, tuple[str, str]]:
+    """alias -> (slug, source), with ambiguous aliases removed."""
+    owners: dict[str, set[str]] = {}
+    sources: dict[str, str] = {}
+    for project in projects:
+        for alias, source in aliases_for(project).items():
+            owners.setdefault(alias, set()).add(project.slug)
+            # A slug is the most authoritative source for an alias, so it wins
+            # the attribution when several projects offer the same string.
+            if alias not in sources or source == "slug":
+                sources[alias] = source
+
+    resolved: dict[str, tuple[str, str]] = {}
+    for alias, slugs in owners.items():
+        if len(slugs) > 1:
+            logger.warning(
+                "alias %r claimed by %s; dropped rather than guessed",
+                alias,
+                ", ".join(sorted(slugs)),
+            )
+            continue
+        resolved[alias] = (next(iter(slugs)), sources[alias])
+    return resolved
+
+
 def observed_work_dirs() -> dict[str, int]:
     """Every distinct working directory in the trail, with its event count."""
     sql = f"""
@@ -233,6 +276,16 @@ def sync(projects: list[Project] | None = None) -> dict[str, int]:
             "DELETE FROM projects WHERE slug <> ALL(%s)",
             ([p.slug for p in projects],),
         )
+        alias_map = build_alias_map(projects)
+        cur.executemany(
+            "INSERT INTO project_alias (alias, slug, source) VALUES (%s, %s, %s) "
+            "ON CONFLICT (alias) DO UPDATE SET slug = EXCLUDED.slug, source = EXCLUDED.source",
+            [(alias, slug, source) for alias, (slug, source) in alias_map.items()],
+        )
+        cur.execute(
+            "DELETE FROM project_alias WHERE alias <> ALL(%s)",
+            (list(alias_map),),
+        )
         cur.executemany(
             """
             INSERT INTO project_dir_map (work_dir, slug, rule, seen, resolved_at)
@@ -247,6 +300,8 @@ def sync(projects: list[Project] | None = None) -> dict[str, int]:
         )
         cur.execute("SELECT COUNT(*), COUNT(slug) FROM project_dir_map")
         total, resolved = cur.fetchone()
+        cur.execute("SELECT COUNT(*) FROM project_alias")
+        alias_rows = cur.fetchone()[0]
 
     counts = {
         "directories": len(rows),
@@ -256,6 +311,7 @@ def sync(projects: list[Project] | None = None) -> dict[str, int]:
         "events_unresolved": sum(row[3] for row in rows if not row[1]),
         "map_rows": total,
         "map_resolved": resolved,
+        "aliases": alias_rows,
     }
     logger.info("project:sync %s", counts)
     return counts

@@ -68,13 +68,25 @@ SESSION_END_TYPES = frozenset(
 # registered project at all. Validating against the registry turns all of that
 # into an honest NULL instead of a JSON blob rendered as a project name.
 #
-# Cost: two correlated lookups, both primary-key probes rather than the prefix
-# scan a naive version would do. Measured 3.5 ms for a 200-row page over the
-# default window (compare 141 s for a correlated longest-prefix subquery, which
-# is exactly why the prefix matching lives in the map instead of here).
+# `data.repo` / `data.slug` are the last two rungs and they are what make the PM
+# lens reachable at all. Measured over 7 days, ZERO of the 1,100+
+# repo.task.* / repo.decision.* / repo.board.* rows carry a working_directory --
+# they come from the Plane webhook and from PM agents, neither of which has a
+# filesystem -- so before these rungs existed, "pick a project, click PM"
+# returned an empty feed, which is the single thing the feature is for. Those
+# rows carry a repo NAME instead (`33god`, `bloodbank`), which is not always the
+# slug (`project`, `bb`), so it is translated through project_alias (007).
+#
+# Cost: four correlated lookups, every one a primary-key probe rather than the
+# prefix scan a naive version would do. Measured 3.5 ms for a 200-row page over
+# the default window at two rungs (compare 141 s for a correlated
+# longest-prefix subquery, which is exactly why prefix matching lives in the
+# map instead of here); re-measured after adding the alias rungs below.
 PROJECT_EXPR = f"""COALESCE(
     (SELECT m.slug FROM project_dir_map m WHERE m.work_dir = {WORK_DIR_EXPR}),
-    (SELECT p.slug FROM projects p WHERE p.slug = NULLIF(data->>'project', ''))
+    (SELECT p.slug FROM projects p WHERE p.slug = NULLIF(data->>'project', '')),
+    (SELECT a.slug FROM project_alias a WHERE a.alias = lower(NULLIF(data->>'repo', ''))),
+    (SELECT a.slug FROM project_alias a WHERE a.alias = lower(NULLIF(data->>'slug', '')))
 )"""
 
 # For GROUP BY, where a NULL bucket has no name to render. The row-level
@@ -82,6 +94,29 @@ PROJECT_EXPR = f"""COALESCE(
 # "no project" from a project literally called "unassigned" -- so the label is
 # applied only where a chart axis needs a string.
 PROJECT_LABEL_EXPR = f"COALESCE({PROJECT_EXPR}, '{UNRESOLVED_PROJECT}')"
+
+# The same question as PROJECT_EXPR, asked in the direction an index can answer.
+#
+# `PROJECT_EXPR = %s` would be one definition instead of two, and it was the
+# first thing tried -- but as a WHERE predicate it runs its correlated lookups
+# on every row in the window rather than on the page, and measured 658 ms over
+# 24 h and 3,085 ms over 7 days. Turned inside out into set membership, the
+# same question is an index scan.
+#
+# Two derivations of one concept is exactly the bug CANDYS-37 deleted three
+# copies of, so this is only tolerable because it is PROVEN equivalent rather
+# than assumed: `test_the_filter_agrees_with_the_display` asserts the two agree
+# row for row over the corpus. Equivalence holds because no row carries
+# conflicting signals -- measured across 402,478 rows over 30 days, there are
+# ZERO cases where the directory says one project and `repo`/`slug`/`project`
+# says another. If that ever stops being true the test fails, which is the
+# point of writing it down.
+PROJECT_FILTER_EXPR = f"""(
+    {WORK_DIR_EXPR} IN (SELECT work_dir FROM project_dir_map WHERE slug = %s)
+    OR NULLIF(data->>'project', '') = %s
+    OR lower(NULLIF(data->>'repo', '')) IN (SELECT alias FROM project_alias WHERE slug = %s)
+    OR lower(NULLIF(data->>'slug', '')) IN (SELECT alias FROM project_alias WHERE slug = %s)
+)"""
 
 # Where an event came from -- the colour of its dot in the feed.
 #
@@ -195,6 +230,103 @@ PROVENANCE_CLASSES: dict[str, dict[str, str]] = {
 }
 
 
+
+# The one-click scopes -- the "PM button" and its siblings. This is the whole
+# no-query-language bet: a lens is a NAMED predicate on the server, so the chip
+# a person clicks and the query an agent runs are the same thing and cannot
+# drift into two dialects of the same question.
+#
+# A lens says WHAT KIND of event; `?class=` says WHO produced it. Keeping those
+# separate is deliberate -- a `subagents` lens would just restate
+# `class=subagent`, and two spellings of one filter is how a facet model starts
+# growing the grammar it was supposed to replace. They compose: AND across
+# facets, OR within one.
+#
+# Counts are measured over 7 days and every lens is non-empty; a chip that can
+# only ever show an empty feed does not ship. No `LIKE 'x%'` anywhere, for the
+# same reason PROVENANCE_EXPR avoids it: a literal % needs doubling only when
+# psycopg2 parameterizes the statement, and these predicates are embedded in
+# queries that sometimes carry params and sometimes do not.
+LENSES: dict[str, dict[str, str]] = {
+    "pm": {
+        "label": "PM",
+        "description": "Tickets, decisions, boards and intake -- the project-management trail.",
+        "sql": (
+            f"(starts_with({SCOPE_TYPE_EXPR}, 'repo.task.') "
+            f"OR {SCOPE_TYPE_EXPR} = 'repo.decision.recorded' "
+            f"OR starts_with({SCOPE_TYPE_EXPR}, 'repo.board.') "
+            f"OR starts_with({SCOPE_TYPE_EXPR}, 'repo.intake.'))"
+        ),
+    },
+    "decisions": {
+        "label": "Decisions",
+        "description": "Judgment calls recorded against pillars.",
+        "sql": f"({SCOPE_TYPE_EXPR} = 'repo.decision.recorded')",
+    },
+    "sessions": {
+        "label": "Sessions",
+        "description": "Agent sessions starting and ending.",
+        # Enumerated rather than matched on a `session.` suffix, which would
+        # also sweep in `audio.session.*` -- a different domain entirely, and
+        # the same trap SESSION_END_TYPES above already documents.
+        "sql": (
+            f"({SCOPE_TYPE_EXPR} IN ('agent.session.started', 'agent.session.ended', "
+            "'cli.session.started', 'cli.session.ended'))"
+        ),
+    },
+    "turns": {
+        "label": "Turns",
+        "description": "Conversation turns and messages.",
+        "sql": f"(starts_with({SCOPE_TYPE_EXPR}, 'conversation.'))",
+    },
+    "agents": {
+        "label": "Agents",
+        "description": "Agent invocations -- one entry per delegated unit of work.",
+        "sql": f"(starts_with({SCOPE_TYPE_EXPR}, 'agent.invocation.'))",
+    },
+    "tools": {
+        "label": "Tools",
+        "description": "Tool calls. 96% of the trail by volume; usually what you collapse.",
+        # Both spellings: the `tool.tool_call.* -> agent.tool.*` entity rename
+        # survives version-stripping, so SCOPE_TYPE_EXPR alone does not fold them.
+        "sql": (
+            f"(starts_with({SCOPE_TYPE_EXPR}, 'agent.tool.') "
+            f"OR starts_with({SCOPE_TYPE_EXPR}, 'tool.tool_call.'))"
+        ),
+    },
+    "errors": {
+        "label": "Errors",
+        "description": "Anything that failed, across every family.",
+        # Cross-cutting rather than a type family, which is the point of it.
+        # An UNEXPECTED container exit belongs here; the 227-a-week deliberate
+        # restarts emphatically do not, or the lens becomes noise.
+        "sql": (
+            "(lower(data->>'outcome') IN "
+            "('error','failure','failed','timeout','timed_out','cancelled','canceled') "
+            f"OR {SCOPE_TYPE_EXPR} ~ '\\.failed$' "
+            f"OR (starts_with({SCOPE_TYPE_EXPR}, 'system.process.') "
+            "AND data->>'expected_exit' = 'false'))"
+        ),
+    },
+    "ops": {
+        "label": "Ops",
+        "description": "Process exits and repo maintenance runs.",
+        "sql": (
+            f"(starts_with({SCOPE_TYPE_EXPR}, 'system.process.') "
+            f"OR starts_with({SCOPE_TYPE_EXPR}, 'repo.maintenance.'))"
+        ),
+    },
+    "reports": {
+        "label": "Reports",
+        "description": "Activity reports and generated summaries.",
+        "sql": (
+            f"(starts_with({SCOPE_TYPE_EXPR}, 'reporting.') "
+            f"OR {SCOPE_TYPE_EXPR} = 'project.activity.recorded')"
+        ),
+    },
+}
+
+
 # Free-text search (`q`) runs against the generated `search_text` column and its
 # trigram index (migrations/003_search.sql).
 #
@@ -252,6 +384,7 @@ def list_events(
     cli: str | None = None,
     project: str | None = None,
     provenance: str | None = None,
+    lens: str | None = None,
     scope: str | None = None,
     q: str | None = None,
     limit: int = 100,
@@ -280,6 +413,7 @@ def list_events(
         cli=cli,
         project=project,
         provenance=provenance,
+        lens=lens,
         scope=scope,
         q=q,
     )
@@ -343,6 +477,119 @@ def get_event_record(event_id: str) -> dict[str, Any] | None:
         cur.execute(sql, (event_id,))
         row = cur.fetchone()
     return _preview_from_row(row) if row else None
+
+
+# ---------------------------------------------------------------------------
+# The collapsed feed (CANDYS-48).
+#
+# Tool calls are 95.9% of the trail -- 159,816 of 166,723 rows over 7 days. A
+# feed that renders them one per row is a scroll bar, not a feed. With them
+# hidden, every consecutive run of tool events between two orchestrator-level
+# events becomes ONE fold row carrying the count, the top tools and the span.
+#
+# Server-side rather than in the browser because the boundary between runs
+# depends on rows the browser may not have (it holds a page; a run can be
+# longer), and because shipping 25x the bytes to throw them away is the thing
+# the filter pushdown exists to avoid.
+#
+# Two invariants make it trustworthy:
+#   * An ERROR terminates a run and gets its own row, so a fold can never hide
+#     a failure. That is why a fold needs no error badge.
+#   * The counts are exact. Sum of fold counts + plain rows == the unfiltered
+#     row count for the same window. Rows are collapsed; nothing is sampled.
+# ---------------------------------------------------------------------------
+
+# A run shorter than this renders as plain rows. A chevron over one item is
+# noise, and hiding two rows behind a control that costs a click to open is a
+# worse trade than just showing them.
+MIN_FOLD_RUN = 3
+
+# How many distinct tool names a fold names before it says "+N more".
+FOLD_TOP_TOOLS = 3
+
+
+def _is_tool_row(event: dict[str, Any]) -> bool:
+    canonical = canonical_type(event.get("type"))
+    return canonical.startswith("bloodbank.agent.tool.")
+
+
+def _fold(run: list[dict[str, Any]]) -> dict[str, Any]:
+    """Collapse a run of tool rows into one counted marker."""
+    names = Counter(
+        (event.get("summary") or {}).get("tool") or "tool" for event in run
+    )
+    top = names.most_common(FOLD_TOP_TOOLS)
+    # Newest first, matching the feed's own order, so `from`/`to` read the way
+    # the rows are laid out.
+    newest, oldest = run[0], run[-1]
+    return {
+        "kind": "fold",
+        # Stable within a page and derived from the run itself, so React can
+        # key on it without the list reshuffling on every poll.
+        "id": f"fold:{oldest['id']}:{newest['id']}",
+        "count": len(run),
+        "tools": dict(top),
+        "other_tools": max(0, len(names) - len(top)),
+        "from": oldest.get("time"),
+        "to": newest.get("time"),
+        "class": newest.get("class"),
+        "project": newest.get("project"),
+        # The members, fetchable without re-deriving the run boundaries.
+        "member_ids": [event["id"] for event in run],
+    }
+
+
+def collapse_tool_runs(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Fold consecutive tool rows, leaving everything else alone.
+
+    Pure, so the boundary rules are testable without a database.
+    """
+    out: list[dict[str, Any]] = []
+    run: list[dict[str, Any]] = []
+
+    def flush() -> None:
+        if not run:
+            return
+        if len(run) >= MIN_FOLD_RUN:
+            out.append(_fold(run))
+        else:
+            out.extend(run)
+        run.clear()
+
+    for event in events:
+        summary = event.get("summary") or {}
+        failed = (summary.get("row") or {}).get("ok") is False
+        if _is_tool_row(event) and not failed:
+            run.append(event)
+            continue
+        # A failure ends the run AND stands on its own, which is what lets a
+        # collapsed feed still be a place you would notice something breaking.
+        flush()
+        out.append(event)
+    flush()
+    return out
+
+
+def list_feed(*, tools: bool = True, **kwargs: Any) -> dict[str, Any]:
+    """`list_events`, optionally with consecutive tool runs collapsed.
+
+    `tools=False` does NOT filter tool calls out of the query -- it folds them
+    after the fact. That distinction is the honesty rule made mechanical: the
+    rows are collapsed, the counts are not, so `folded` reports exactly how
+    many events are behind the markers and the arithmetic still closes.
+    """
+    result = list_events(**kwargs)
+    if tools:
+        result["rows"] = result["events"]
+        result["folded"] = 0
+        return result
+
+    rows = collapse_tool_runs(result["events"])
+    result["rows"] = rows
+    result["folded"] = sum(
+        row["count"] for row in rows if row.get("kind") == "fold"
+    )
+    return result
 
 
 def get_event_with_project(event_id: str) -> tuple[dict[str, Any], str | None] | None:
@@ -582,6 +829,31 @@ def list_classes(window_hours: int = DEFAULT_WINDOW_HOURS) -> dict[str, Any]:
     }
 
 
+def list_lenses(window_hours: int = DEFAULT_WINDOW_HOURS) -> dict[str, Any]:
+    """Every lens with its count in the window, so a chip can show its size."""
+    counts: dict[str, int] = {}
+    with cursor() as cur:
+        for name, meta in LENSES.items():
+            cur.execute(
+                f"SELECT COUNT(*) FROM events "
+                f"WHERE time >= NOW() - make_interval(hours => %s) AND {meta['sql']}",
+                (window_hours,),
+            )
+            counts[name] = cur.fetchone()[0]
+    return {
+        "lenses": [
+            {
+                "lens": name,
+                "label": meta["label"],
+                "description": meta["description"],
+                "count": counts[name],
+            }
+            for name, meta in LENSES.items()
+        ],
+        "window_hours": window_hours,
+    }
+
+
 def known_project_slugs() -> set[str]:
     with cursor() as cur:
         cur.execute("SELECT slug FROM projects")
@@ -656,6 +928,12 @@ def _filters(**kwargs: str | None) -> tuple[list[str], list[Any]]:
     if kwargs["cli"]:
         where.append("actor->>'cli' = %s")
         params.append(kwargs["cli"])
+    lens = kwargs.get("lens")
+    if lens:
+        values = [value.strip() for value in lens.split(",") if value.strip()]
+        clauses = [LENSES[value]["sql"] for value in values if value in LENSES]
+        if clauses:
+            where.append(f"({' OR '.join(clauses)})")
     provenance = kwargs.get("provenance")
     if provenance:
         values = [value.strip() for value in provenance.split(",") if value.strip()]
@@ -667,19 +945,16 @@ def _filters(**kwargs: str | None) -> tuple[list[str], list[Any]]:
             where.append(f"{PROVENANCE_EXPR} IN ({placeholders})")
             params.extend(values)
     if kwargs["project"]:
-        # A registry slug, resolved through project_dir_map -- not a substring
-        # of a basename. The old `PROJECT_EXPR ILIKE '%...%'` was wrong in both
-        # directions: it matched `intelliforia` against `intelliforia-mobile`,
-        # and it missed every worktree whose basename does not contain the
-        # project name. It was also non-sargable, so it cost a full scan
-        # (measured 8.45 s; the planner estimated 37 rows against 118,745).
+        # A registry slug, resolved the same way PROJECT_EXPR resolves it -- not
+        # a substring of a basename. The old `PROJECT_EXPR ILIKE '%...%'` was
+        # wrong in both directions: it matched `intelliforia` against
+        # `intelliforia-mobile`, and it missed every worktree whose basename
+        # does not contain the project name. It was also non-sargable, so it
+        # cost a full scan (measured 8.45 s; the planner estimated 37 rows
+        # against 118,745).
         #
-        # The subquery returns a few dozen directories at most, which the
-        # work_dir expression can be compared against directly.
-        where.append(
-            f"{WORK_DIR_EXPR} IN (SELECT work_dir FROM project_dir_map WHERE slug = %s)"
-        )
-        params.append(kwargs["project"])
+        where.append(PROJECT_FILTER_EXPR)
+        params.extend([kwargs["project"]] * 4)
     if kwargs.get("q") and kwargs["q"].strip():
         clause, search_params = _search_clause(kwargs["q"])
         where.append(clause)

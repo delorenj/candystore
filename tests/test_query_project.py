@@ -13,7 +13,7 @@ from http.server import ThreadingHTTPServer
 
 from candystore.db import insert_event
 from candystore.main import Handler
-from candystore.query import list_projects
+from candystore.query import list_events, list_projects
 
 
 def _serve():
@@ -32,26 +32,33 @@ def _get(host: str, port: int, path: str):
     return response.status, (json.loads(raw.decode("utf-8")) if raw else None)
 
 
+# `sample_event` MERGES its default data, which carries both a
+# working_directory under candystore and `project: candystore`. A test about
+# one resolution rung has to null the others, or every row resolves through the
+# first rung and the test proves nothing about the one it names.
+ONLY = {"working_directory": None, "project": None, "repo": None, "slug": None}
+
+
 def _seed(sample_event) -> dict[str, str]:
     """Three events in three directories the map resolves differently."""
     events = {
         "candystore": sample_event(
             id="550e8400-e29b-41d4-a716-4466554aa001",
-            data={"working_directory": "/home/delorenj/code/33GOD/candystore"},
+            data={**ONLY, "working_directory": "/home/delorenj/code/33GOD/candystore"},
         ),
         "bb": sample_event(
             id="550e8400-e29b-41d4-a716-4466554aa002",
-            data={"working_directory": "/home/delorenj/code/33GOD/bloodbank"},
+            data={**ONLY, "working_directory": "/home/delorenj/code/33GOD/bloodbank"},
         ),
         # A sibling worktree the map assigns to james-brennan.
         "james-brennan": sample_event(
             id="550e8400-e29b-41d4-a716-4466554aa003",
-            data={"working_directory": "/home/delorenj/code/james-brennan-jimb169"},
+            data={**ONLY, "working_directory": "/home/delorenj/code/james-brennan-jimb169"},
         ),
         # Unresolved: belongs to no registry project.
         "unresolved": sample_event(
             id="550e8400-e29b-41d4-a716-4466554aa004",
-            data={"working_directory": "/tmp/hermes-board-cranker-50"},
+            data={**ONLY, "working_directory": "/tmp/hermes-board-cranker-50"},
         ),
     }
     for event in events.values():
@@ -167,3 +174,82 @@ def test_projects_endpoint_and_window_validation(db, project_map, sample_event):
     finally:
         server.shutdown()
         thread.join(timeout=3)
+
+
+def test_the_filter_agrees_with_the_display(db, project_map, sample_event):
+    """`?project=X` and the `project` a row displays must be the same question.
+
+    They are two SQL expressions, which is the shape CANDYS-37 deleted three
+    copies of -- tolerable here only because it is proven rather than assumed.
+    PROJECT_EXPR is a COALESCE (first rung wins) and PROJECT_FILTER_EXPR is a
+    disjunction (any rung matches); those agree exactly as long as no row
+    carries two rungs pointing at different projects. Measured across 402,478
+    rows over 30 days: zero such rows. This test is what notices if that stops
+    being true.
+    """
+    events = [
+        # Resolves by directory.
+        sample_event(
+            id="550e8400-e29b-41d4-a716-4466554dd001",
+            data={**ONLY, "working_directory": "/home/delorenj/code/33GOD/bloodbank"},
+        ),
+        # By `repo` NAME, which is not the slug -- the case that makes the PM
+        # lens reachable at all (zero PM rows carry a working_directory).
+        sample_event(
+            id="550e8400-e29b-41d4-a716-4466554dd002",
+            data={**ONLY, "repo": "bloodbank"},
+        ),
+        # By `slug`.
+        sample_event(
+            id="550e8400-e29b-41d4-a716-4466554dd003",
+            data={**ONLY, "slug": "james-brennan"},
+        ),
+        # By an explicit, registry-valid `data.project`.
+        sample_event(
+            id="550e8400-e29b-41d4-a716-4466554dd004",
+            data={**ONLY, "project": "candystore"},
+        ),
+        # Resolves by nothing.
+        sample_event(
+            id="550e8400-e29b-41d4-a716-4466554dd005",
+            data={**ONLY, "repo": "not-a-registered-project"},
+        ),
+    ]
+    for env in events:
+        assert insert_event(env) is True
+
+    early = "from_time"
+    listed = list_events(**{early: "2000-01-01T00:00:00Z"}, limit=100)
+    displayed = {event["id"]: event["project"] for event in listed["events"]}
+
+    for slug in ("bb", "james-brennan", "candystore", "vinyl"):
+        filtered = {
+            event["id"]
+            for event in list_events(
+                **{early: "2000-01-01T00:00:00Z"}, project=slug, limit=100
+            )["events"]
+        }
+        expected = {eid for eid, shown in displayed.items() if shown == slug}
+        assert filtered == expected, f"{slug}: filter {filtered} vs display {expected}"
+
+    # The unresolvable row is claimed by no slug at all.
+    assert displayed["550e8400-e29b-41d4-a716-4466554dd005"] is None
+
+
+def test_a_repo_name_that_is_not_the_slug_still_resolves(db, project_map, sample_event):
+    """`data.repo` holds a repo NAME. Two of the live projects have a name that
+    differs from their slug -- 33god is `project` and bloodbank is `bb` -- so a
+    name has to be translated through project_alias rather than matched."""
+    env = sample_event(
+        id="550e8400-e29b-41d4-a716-4466554de001", data={**ONLY, "repo": "bloodbank"}
+    )
+    assert insert_event(env) is True
+
+    listed = list_events(from_time="2000-01-01T00:00:00Z", project="bb", limit=10)
+    assert [event["id"] for event in listed["events"]] == [env["id"]]
+    assert listed["events"][0]["project"] == "bb"
+
+    # And the directory basename is not a back door to the wrong slug.
+    assert list_events(
+        from_time="2000-01-01T00:00:00Z", project="bloodbank", limit=10
+    )["events"] == []

@@ -668,7 +668,19 @@ def project_map(db: None) -> Iterator[None]:
         # In the registry with no events -- the picker must still list it.
         ("vinyl", "vinyl", "/home/delorenj/code/vinyl", "VINY"),
     )
+    aliases = (
+        ("candystore", "candystore", "slug"),
+        ("bloodbank", "bb", "dir_name"),
+        ("bb", "bb", "slug"),
+        ("james-brennan", "james-brennan", "slug"),
+        ("vinyl", "vinyl", "slug"),
+    )
     with db_cursor() as cur:
+        cur.executemany(
+            "INSERT INTO project_alias (alias, slug, source) VALUES (%s, %s, %s) "
+            "ON CONFLICT (alias) DO UPDATE SET slug = EXCLUDED.slug",
+            aliases,
+        )
         cur.executemany(
             "INSERT INTO project_dir_map (work_dir, slug, rule) VALUES (%s, %s, %s) "
             "ON CONFLICT (work_dir) DO UPDATE SET slug = EXCLUDED.slug, rule = EXCLUDED.rule",
@@ -689,6 +701,8 @@ def project_map(db: None) -> Iterator[None]:
                         ([row[0] for row in rows],))
             cur.execute("DELETE FROM projects WHERE slug = ANY(%s)",
                         ([row[0] for row in registry],))
+            cur.execute("DELETE FROM project_alias WHERE alias = ANY(%s)",
+                        ([row[0] for row in aliases],))
 
 
 @pytest.fixture
