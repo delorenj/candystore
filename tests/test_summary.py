@@ -143,6 +143,10 @@ def test_agent_invocation_stop_reason_and_error_message(sample_event):
 
 
 def test_unknown_type_still_falls_back_to_generic(sample_event):
-    summary = summarize(sample_event(type="bloodbank.repo.decision.recorded"))
+    # Deliberately a type no producer emits. This test used to name
+    # `repo.decision.recorded`, which CANDYS-43 gave a real summarizer -- so it
+    # started asserting that a covered type renders generic, which is the
+    # opposite of what it is for.
+    summary = summarize(sample_event(type="bloodbank.invented.thing.happened"))
 
-    assert summary["title"] == "bloodbank.repo.decision.recorded"
+    assert summary["title"] == "bloodbank.invented.thing.happened"
