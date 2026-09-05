@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -760,6 +761,110 @@ def by_cli(from_time: str | None = None, to_time: str | None = None) -> list[dic
     return [{"cli": row[0], "count": row[1]} for row in rows]
 
 
+# Bucket widths the strip offers, in seconds. A closed set, like the window
+# presets: an arbitrary width is another way to ask for a scan, and the strip
+# only ever needs about 40 columns across whatever span is shown.
+TIMELINE_BUCKETS = (1, 60, 300, 1800, 3600)
+
+# Datadog's literal rule, and a good one: past six, colours repeat and a stacked
+# bar stops being readable. The seventh series is the honest remainder.
+MAX_TIMELINE_SERIES = 6
+
+
+def timeline(
+    *,
+    bucket_seconds: int = 60,
+    group: str = "class",
+    from_time: str | None = None,
+    to_time: str | None = None,
+    **filters: str | None,
+) -> dict[str, Any]:
+    """Bucketed counts for the strip above the feed.
+
+    Stacked by provenance CLASS rather than by event type, because 96% of the
+    trail is one type and stacking by type renders a single solid block that
+    answers nothing.
+
+    Deliberately takes no `tools` argument. The strip counts every event that
+    matches the SCOPE, including tool calls the feed is currently folding --
+    so collapsing the feed never changes the shape of the chart above it. That
+    is the honesty rule made mechanical: rows are collapsed, counts are not.
+    """
+    if bucket_seconds not in TIMELINE_BUCKETS:
+        raise ValueError(f"bucket must be one of {TIMELINE_BUCKETS}")
+    group_expr = {
+        "class": PROVENANCE_EXPR,
+        "project": PROJECT_LABEL_EXPR,
+        "cli": "COALESCE(actor->>'cli', 'unknown')",
+        "domain": "domain",
+    }.get(group)
+    if group_expr is None:
+        raise ValueError("group must be one of class, project, cli, domain")
+
+    where, params = _filters(from_time=from_time, to_time=to_time, **filters)
+    clause = " AND ".join(where)
+
+    # floor(epoch / width) * width is the bucket start. Cheaper and clearer
+    # than date_trunc for widths date_trunc has no name for (5 min, 30 min).
+    sql = f"""
+    SELECT to_timestamp(floor(extract(epoch FROM time) / %s) * %s) AS bucket,
+           {group_expr} AS series,
+           COUNT(*) AS count
+    FROM events
+    WHERE {clause}
+    GROUP BY 1, 2
+    ORDER BY 1
+    """
+    with cursor() as cur:
+        cur.execute(sql, [bucket_seconds, bucket_seconds, *params])
+        rows = cur.fetchall()
+
+    totals: Counter[str] = Counter()
+    for _, series, count in rows:
+        totals[series or "unknown"] += count
+    keep = {name for name, _ in totals.most_common(MAX_TIMELINE_SERIES)}
+    truncated = set(totals) - keep
+
+    buckets: dict[str, Counter[str]] = {}
+    for bucket, series, count in rows:
+        name = series or "unknown"
+        # The remainder is folded into one series rather than dropped, so the
+        # bars still sum to the true total.
+        key = name if name in keep else "other"
+        buckets.setdefault(_iso(bucket), Counter())[key] += count
+
+    return {
+        "buckets": [
+            {"bucket": bucket, "series": dict(counts), "total": sum(counts.values())}
+            for bucket, counts in sorted(buckets.items())
+        ],
+        "series": sorted(keep) + (["other"] if truncated else []),
+        # Echoed so the legend can print "1 min per column" verbatim -- a
+        # histogram that does not say its resolution invites being misread.
+        "bucket_seconds": bucket_seconds,
+        "group_by": group,
+        "truncated_series": sorted(truncated),
+    }
+
+
+def parse_time_bound(value: str | None) -> str | None:
+    """Accept `-90m` / `-24h` / `-7d` alongside an ISO timestamp.
+
+    A relative bound is what both the strip and a CLI actually want to say, and
+    without it every caller reimplements the same subtraction slightly
+    differently. Anything unrecognized is passed through untouched so the
+    database still reports a genuine typo rather than this silently reshaping it.
+    """
+    if not value or not value.startswith("-"):
+        return value
+    match = re.fullmatch(r"-(\d+)([smhd])", value.strip())
+    if not match:
+        return value
+    amount, unit = int(match.group(1)), match.group(2)
+    seconds = amount * {"s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
+    return (datetime.now(UTC) - timedelta(seconds=seconds)).isoformat()
+
+
 def list_projects(window_hours: int = DEFAULT_WINDOW_HOURS) -> dict[str, Any]:
     """The PJangler registry, each project with its event count in the window.
 
@@ -875,10 +980,18 @@ def by_project(from_time: str | None = None, to_time: str | None = None) -> list
 
 
 def _filters(**kwargs: str | None) -> tuple[list[str], list[Any]]:
+    """Build the WHERE fragments and params for a set of filters.
+
+    Every filter is optional and read with `.get()`. It used to index kwargs
+    directly, which quietly made every key MANDATORY -- so a caller that
+    legitimately did not care about `type` got a KeyError rather than an
+    unfiltered query, and every new caller had to pass the full set to work at
+    all.
+    """
     where = ["1=1"]
     params: list[Any] = []
 
-    event_type = kwargs["type"]
+    event_type = kwargs.get("type")
     if event_type:
         values = [value.strip() for value in event_type.split(",") if value.strip()]
         if len(values) == 1:
@@ -907,27 +1020,27 @@ def _filters(**kwargs: str | None) -> tuple[list[str], list[Any]]:
                 params.append(parts[0])
         if conditions:
             where.append(f"({' OR '.join(conditions)})")
-    if kwargs["domain"]:
+    if kwargs.get("domain"):
         where.append("domain = %s")
-        params.append(kwargs["domain"])
-    if kwargs["from_time"]:
+        params.append(kwargs.get("domain"))
+    if kwargs.get("from_time"):
         where.append("time >= %s")
-        params.append(kwargs["from_time"])
-    if kwargs["to_time"]:
+        params.append(kwargs.get("from_time"))
+    if kwargs.get("to_time"):
         where.append("time <= %s")
-        params.append(kwargs["to_time"])
-    if kwargs["correlationid"]:
+        params.append(kwargs.get("to_time"))
+    if kwargs.get("correlationid"):
         where.append("correlationid::text = %s")
-        params.append(kwargs["correlationid"])
-    if kwargs["producer"]:
+        params.append(kwargs.get("correlationid"))
+    if kwargs.get("producer"):
         where.append("producer = %s")
-        params.append(kwargs["producer"])
-    if kwargs["service"]:
+        params.append(kwargs.get("producer"))
+    if kwargs.get("service"):
         where.append("service = %s")
-        params.append(kwargs["service"])
-    if kwargs["cli"]:
+        params.append(kwargs.get("service"))
+    if kwargs.get("cli"):
         where.append("actor->>'cli' = %s")
-        params.append(kwargs["cli"])
+        params.append(kwargs.get("cli"))
     lens = kwargs.get("lens")
     if lens:
         values = [value.strip() for value in lens.split(",") if value.strip()]
@@ -944,7 +1057,7 @@ def _filters(**kwargs: str | None) -> tuple[list[str], list[Any]]:
             placeholders = ", ".join(["%s"] * len(values))
             where.append(f"{PROVENANCE_EXPR} IN ({placeholders})")
             params.extend(values)
-    if kwargs["project"]:
+    if kwargs.get("project"):
         # A registry slug, resolved the same way PROJECT_EXPR resolves it -- not
         # a substring of a basename. The old `PROJECT_EXPR ILIKE '%...%'` was
         # wrong in both directions: it matched `intelliforia` against
@@ -954,9 +1067,9 @@ def _filters(**kwargs: str | None) -> tuple[list[str], list[Any]]:
         # against 118,745).
         #
         where.append(PROJECT_FILTER_EXPR)
-        params.extend([kwargs["project"]] * 4)
-    if kwargs.get("q") and kwargs["q"].strip():
-        clause, search_params = _search_clause(kwargs["q"])
+        params.extend([kwargs.get("project")] * 4)
+    if kwargs.get("q") and kwargs.get("q").strip():
+        clause, search_params = _search_clause(kwargs.get("q"))
         where.append(clause)
         params.extend(search_params)
 

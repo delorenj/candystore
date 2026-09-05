@@ -37,6 +37,8 @@ from candystore.query import (
     list_feed,
     list_lenses,
     list_projects,
+    parse_time_bound,
+    timeline,
 )
 from candystore.summarize import summarize
 
@@ -141,8 +143,8 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
             from_time, to_time = applied_window(
-                _first(qs, "from"),
-                _first(qs, "to"),
+                parse_time_bound(_first(qs, "from")),
+                parse_time_bound(_first(qs, "to")),
                 correlationid=correlationid,
                 q=q,
             )
@@ -238,6 +240,50 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
             self._send_json(200, list_projects(window_hours=hours))
+            return
+
+        if path == "/summary/timeline":
+            qs = parse_qs(parsed.query)
+            try:
+                bucket = int(_first(qs, "bucket") or "60")
+            except ValueError:
+                self._send_json(400, {"error": "bucket must be an integer"})
+                return
+            project = _first(qs, "project")
+            if project and project not in known_project_slugs():
+                self._send_json(400, {"error": f"unknown project slug {project!r}"})
+                return
+            # The strip shares the feed's window policy, so the chart and the
+            # rows below it always describe the same span.
+            from_time, to_time = applied_window(
+                parse_time_bound(_first(qs, "from")),
+                parse_time_bound(_first(qs, "to")),
+            )
+            try:
+                self._send_json(
+                    200,
+                    timeline(
+                        bucket_seconds=bucket,
+                        group=_first(qs, "group") or "class",
+                        from_time=from_time,
+                        to_time=to_time,
+                        type=_first(qs, "type"),
+                        domain=_first(qs, "domain"),
+                        correlationid=_first(qs, "correlationid"),
+                        producer=_first(qs, "producer"),
+                        service=_first(qs, "service"),
+                        cli=_first(qs, "cli"),
+                        project=project,
+                        provenance=_first(qs, "class"),
+                        lens=_first(qs, "lens"),
+                        scope=_first(qs, "scope"),
+                        q=_first(qs, "q"),
+                    ),
+                )
+            except ValueError as exc:
+                self._send_json(400, {"error": str(exc)})
+            except SearchError as exc:
+                self._send_json(400, {"error": str(exc)})
             return
 
         if path == "/lenses":
