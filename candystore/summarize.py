@@ -47,7 +47,11 @@ def canonical_type(event_type: Any) -> str:
     return _RENAMED_TYPES.get(stripped, stripped)
 
 
-def summarize(env: dict[str, Any], project: str | None = None) -> dict[str, Any]:
+def summarize(
+    env: dict[str, Any],
+    project: str | None = None,
+    provenance: str | None = None,
+) -> dict[str, Any]:
     """Render one envelope for display.
 
     `project` is the row's already-resolved registry slug (query.PROJECT_EXPR).
@@ -58,6 +62,11 @@ def summarize(env: dict[str, Any], project: str | None = None) -> dict[str, Any]
     days. A caller with no resolved slug (a raw envelope in a test, or
     /events/<id>/summary before the row is read) gets UNRESOLVED_PROJECT rather
     than a second guess.
+
+    `provenance` is the row's class (query.PROVENANCE_EXPR), passed in for the
+    same reason: it is derived in SQL so a dot can be clicked to filter and the
+    strip can GROUP BY it, and re-deriving it here would be a second definition
+    that drifts from the one the filter uses.
     """
     fn = SUMMARIZERS.get(canonical_type(env.get("type", "")), _generic)
     summary = fn(env)
@@ -72,6 +81,7 @@ def summarize(env: dict[str, Any], project: str | None = None) -> dict[str, Any]
     # byte-identical value for the same row, which is the whole point of this
     # signature. Only the title, which is prose, gets the label.
     summary["project"] = project
+    summary["class"] = provenance
     title = summary.get("title")
     if isinstance(title, str) and _PROJECT_PLACEHOLDER in title:
         summary["title"] = title.replace(_PROJECT_PLACEHOLDER, project or UNRESOLVED_PROJECT)

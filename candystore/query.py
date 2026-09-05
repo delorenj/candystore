@@ -83,6 +83,118 @@ PROJECT_EXPR = f"""COALESCE(
 # applied only where a chart axis needs a string.
 PROJECT_LABEL_EXPR = f"COALESCE({PROJECT_EXPR}, '{UNRESOLVED_PROJECT}')"
 
+# Where an event came from -- the colour of its dot in the feed.
+#
+# Derived in SQL rather than in summarize.py because the feed CLICKS a dot to
+# filter and the timeline strip needs `GROUP BY class`; a Python function that
+# runs per row after the rows come back can serve neither. Measured on the live
+# table: `GROUP BY class, minute` over the default 60-minute window costs 18 ms.
+#
+# Order is significant, and the first two branches are the interesting ones:
+#
+#  * `payload.agent_id` marks a SUBAGENT, and it is checked first because a
+#    subagent's events are also agent-CLI events -- the later `agent_cli` branch
+#    would swallow every one of them. Verified over the whole table: agent_id
+#    NEVER equals session_id (0 of 22,284 `agent_type='default'` rows), so an
+#    orchestrator's own events do not carry the key at all. That also settles
+#    what `agent_type='default'` is: those rows carry `hook: SubagentStop` and
+#    230 distinct agent_ids across 73 sessions, so it is an unnamed subagent,
+#    not the orchestrator (CANDYS-50).
+#
+#  * A `hermes-agent:` producer prefix is a named PM/momo profile
+#    (`hermes-agent:33god-pm`). Bare `hermes-agent` is the fleet agent doing
+#    ordinary work and stays in `agent`; the colon is the whole distinction.
+#
+# The Plane webhook arrives through n8n but its provenance is the ticket board,
+# so `actor.type = 'ticket_provider'` is checked before the n8n branch --
+# otherwise every ticket event would read as generic workflow traffic.
+#
+# `starts_with()` rather than `LIKE 'x%'` throughout, deliberately. A literal
+# `%` in a SQL string that psycopg2 later parameterizes has to be written `%%`,
+# and this constant is embedded in queries that sometimes carry params and
+# sometimes do not -- so the same text would need two different spellings to be
+# correct. `starts_with()` has no escaping to get wrong.
+PROVENANCE_EXPR = """CASE
+    WHEN data->'payload' ? 'agent_id'                            THEN 'subagent'
+    WHEN starts_with(producer, 'hermes-agent:')                  THEN 'pm_agent'
+    WHEN actor->>'type' = 'ticket_provider'                      THEN 'ticket_webhook'
+    WHEN producer = 'n8n'
+         OR starts_with(source, 'urn:33god:integration:n8n:')    THEN 'n8n_workflow'
+    WHEN actor->>'type' = 'agent_cli'                            THEN 'agent'
+    WHEN actor->>'type' = 'service'
+         OR starts_with(source, 'urn:33god:service:')
+         OR starts_with(source, 'urn:33god:skill:')              THEN 'service'
+    WHEN actor->>'type' = 'operator'                             THEN 'operator'
+    ELSE 'other'
+END"""
+
+# Every class the classifier can produce, with the colour the feed paints it and
+# an honest note about what it cannot see. `coverage` is not decoration: the
+# strip and the dots are only trustworthy if their gaps are declared, and two of
+# these classes have real ones.
+#
+# No red and no green anywhere -- those two hues carry OUTCOME on a row, and a
+# dot that competes with them for the same channel makes "red" stop meaning bad.
+PROVENANCE_CLASSES: dict[str, dict[str, str]] = {
+    "agent": {
+        "color": "#3b82f6",
+        "label": "Agent",
+        "description": "An agent CLI acting as the orchestrator of its own session.",
+        "coverage": "complete",
+    },
+    "subagent": {
+        "color": "#8b5cf6",
+        "label": "Subagent",
+        "description": "Work done by a delegated agent, attributed via payload.agent_id.",
+        # Stated in the API, not just in a ticket. Measured over 7 days:
+        # codex-cli attributes 15,415 subagent rows, while claude-code spawned
+        # 388 subagents (Agent/Task/Workflow tool calls) and emitted ZERO
+        # attributable rows for them -- its subagent work is in the trail,
+        # indistinguishable from the orchestrator's, and lands in `agent`.
+        # So a small violet share means "little CODEX subagent work", never
+        # "little subagent work". CANDYS-65 is the producer-side fix.
+        "coverage": "codex-cli only; claude-code and hermes-agent emit no "
+        "per-event subagent marker, so their subagent work counts as `agent`",
+    },
+    "pm_agent": {
+        "color": "#14b8a6",
+        "label": "PM agent",
+        "description": "A named Hermes PM or momo profile (hermes-agent:<profile>).",
+        "coverage": "complete",
+    },
+    "ticket_webhook": {
+        "color": "#ec4899",
+        "label": "Ticket board",
+        "description": "Plane board activity, delivered through the n8n webhook.",
+        "coverage": "complete",
+    },
+    "n8n_workflow": {
+        "color": "#eab308",
+        "label": "n8n workflow",
+        "description": "An n8n workflow that is not the ticket-board webhook.",
+        "coverage": "complete",
+    },
+    "service": {
+        "color": "#64748b",
+        "label": "Service",
+        "description": "A 33GOD service or skill (tiller, deathwatch, activity-report).",
+        "coverage": "complete",
+    },
+    "operator": {
+        "color": "#a3a3a3",
+        "label": "Operator",
+        "description": "A human acting directly rather than through an agent.",
+        "coverage": "complete",
+    },
+    "other": {
+        "color": "#9ca3af",
+        "label": "Other",
+        "description": "Matched no rule. Should stay empty; if it grows, a producer changed.",
+        "coverage": "complete",
+    },
+}
+
+
 # Free-text search (`q`) runs against the generated `search_text` column and its
 # trigram index (migrations/003_search.sql).
 #
@@ -139,6 +251,7 @@ def list_events(
     service: str | None = None,
     cli: str | None = None,
     project: str | None = None,
+    provenance: str | None = None,
     scope: str | None = None,
     q: str | None = None,
     limit: int = 100,
@@ -166,6 +279,7 @@ def list_events(
         service=service,
         cli=cli,
         project=project,
+        provenance=provenance,
         scope=scope,
         q=q,
     )
@@ -175,7 +289,7 @@ def list_events(
     clause = " AND ".join(where)
     select_sql = f"""
     SELECT id, type, time, producer, service, domain, actor, data, correlationid, raw,
-           {PROJECT_EXPR} AS project
+           {PROJECT_EXPR} AS project, {PROVENANCE_EXPR} AS class
     FROM events
     WHERE {clause}
     ORDER BY time DESC
@@ -221,7 +335,7 @@ def list_events(
 def get_event_record(event_id: str) -> dict[str, Any] | None:
     sql = f"""
     SELECT id, type, time, producer, service, domain, actor, data, correlationid, raw,
-           {PROJECT_EXPR} AS project
+           {PROJECT_EXPR} AS project, {PROVENANCE_EXPR} AS class
     FROM events
     WHERE id = %s
     """
@@ -253,7 +367,7 @@ def get_event(event_id: str) -> dict[str, Any] | None:
 def get_session_events(correlationid: str) -> list[dict[str, Any]]:
     sql = f"""
     SELECT id, type, time, producer, service, domain, actor, data, correlationid, raw,
-           {PROJECT_EXPR} AS project
+           {PROJECT_EXPR} AS project, {PROVENANCE_EXPR} AS class
     FROM events
     WHERE correlationid::text = %s
     ORDER BY time ASC
@@ -277,7 +391,8 @@ def get_session_events(correlationid: str) -> list[dict[str, Any]]:
                 "data": row[7],
                 "correlationid": str(row[8]) if row[8] else None,
                 "project": row[10],
-                "summary": summarize(raw, row[10]),
+                "class": row[11],
+                "summary": summarize(raw, row[10], row[11]),
                 "raw": raw,
             }
         )
@@ -444,6 +559,29 @@ def list_projects(window_hours: int = DEFAULT_WINDOW_HOURS) -> dict[str, Any]:
     }
 
 
+def list_classes(window_hours: int = DEFAULT_WINDOW_HOURS) -> dict[str, Any]:
+    """Every provenance class with its colour, its count, and its blind spots.
+
+    The counts come from the data; `coverage` is a declared property of the
+    classifier. Both are served together on purpose -- a dot whose gaps are
+    only written down in a ticket is a dot that lies by omission.
+    """
+    with cursor() as cur:
+        cur.execute(
+            f"SELECT {PROVENANCE_EXPR} AS class, COUNT(*) FROM events "
+            "WHERE time >= NOW() - make_interval(hours => %s) GROUP BY 1",
+            (window_hours,),
+        )
+        counts = {row[0]: row[1] for row in cur.fetchall()}
+    return {
+        "classes": [
+            {"class": name, **meta, "count": counts.get(name, 0)}
+            for name, meta in PROVENANCE_CLASSES.items()
+        ],
+        "window_hours": window_hours,
+    }
+
+
 def known_project_slugs() -> set[str]:
     with cursor() as cur:
         cur.execute("SELECT slug FROM projects")
@@ -518,6 +656,16 @@ def _filters(**kwargs: str | None) -> tuple[list[str], list[Any]]:
     if kwargs["cli"]:
         where.append("actor->>'cli' = %s")
         params.append(kwargs["cli"])
+    provenance = kwargs.get("provenance")
+    if provenance:
+        values = [value.strip() for value in provenance.split(",") if value.strip()]
+        if values:
+            # Multi-select within one facet is OR. Across facets it is AND.
+            # That rule is the substitute for a query grammar, so it is applied
+            # identically everywhere rather than per-endpoint.
+            placeholders = ", ".join(["%s"] * len(values))
+            where.append(f"{PROVENANCE_EXPR} IN ({placeholders})")
+            params.extend(values)
     if kwargs["project"]:
         # A registry slug, resolved through project_dir_map -- not a substring
         # of a basename. The old `PROJECT_EXPR ILIKE '%...%'` was wrong in both
@@ -637,7 +785,7 @@ def _as_uuid(value: str) -> str | None:
 
 def _preview_from_row(row: tuple[Any, ...]) -> dict[str, Any]:
     raw = row[9]
-    summary = summarize(raw, row[10])
+    summary = summarize(raw, row[10], row[11])
     actor = row[6] or {}
     return {
         "id": str(row[0]),
@@ -651,6 +799,7 @@ def _preview_from_row(row: tuple[Any, ...]) -> dict[str, Any]:
         "correlationid": str(row[8]) if row[8] else None,
         "cli": actor.get("cli"),
         "project": row[10],
+        "class": row[11],
         "summary": summary,
     }
 

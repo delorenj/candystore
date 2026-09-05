@@ -19,6 +19,7 @@ from candystore.db import check_connection, init_schema, record_dead_letter
 from candystore.ingest import handle_event, known_event_routes, subscribe_response
 from candystore.query import (
     COUNT_CAP,
+    PROVENANCE_CLASSES,
     SearchError,
     applied_window,
     by_cli,
@@ -31,6 +32,7 @@ from candystore.query import (
     get_session_summary,
     heatmap,
     known_project_slugs,
+    list_classes,
     list_events,
     list_projects,
 )
@@ -103,6 +105,24 @@ class Handler(BaseHTTPRequestHandler):
                     },
                 )
                 return
+            # Same treatment as `project`: an unknown class is the caller's
+            # typo, and answering it with an empty feed would look like "no
+            # such traffic" instead of "no such class".
+            provenance = _first(qs, "class")
+            unknown = [
+                value.strip()
+                for value in (provenance or "").split(",")
+                if value.strip() and value.strip() not in PROVENANCE_CLASSES
+            ]
+            if unknown:
+                self._send_json(
+                    400,
+                    {
+                        "error": f"unknown provenance class {', '.join(repr(u) for u in unknown)}",
+                        "valid": sorted(PROVENANCE_CLASSES),
+                    },
+                )
+                return
             from_time, to_time = applied_window(
                 _first(qs, "from"),
                 _first(qs, "to"),
@@ -120,6 +140,7 @@ class Handler(BaseHTTPRequestHandler):
                     service=_first(qs, "service"),
                     cli=_first(qs, "cli"),
                     project=project,
+                    provenance=provenance,
                     scope=_first(qs, "scope"),
                     q=q,
                     limit=limit,
@@ -196,6 +217,19 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
             self._send_json(200, list_projects(window_hours=hours))
+            return
+
+        if path == "/classes":
+            qs = parse_qs(parsed.query)
+            window = _first(qs, "window") or "24h"
+            hours = _WINDOW_HOURS.get(window)
+            if hours is None:
+                self._send_json(
+                    400,
+                    {"error": f"unknown window {window!r}", "valid": sorted(_WINDOW_HOURS)},
+                )
+                return
+            self._send_json(200, list_classes(window_hours=hours))
             return
 
         if path == "/summary/heatmap":
