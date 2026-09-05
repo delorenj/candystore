@@ -247,6 +247,52 @@ never registered — CANDYS-68 moves it toward ~1.5%.
 
 ---
 
+### 2026-09-04 (later) — the critical path is complete
+
+**All 11 critical-path stories shipped.** CANDYS-33/34/35/36/37/41/43/46/47/48/49/52 → Done, plus
+CANDYS-50 answered without needing its spike. Your verbatim story runs end to end: pick a registry
+project, see a class-stacked timeline above the feed, click **PM**, read formatted rows, uncheck
+**Show tool calls** and get counted dots.
+
+Driven in a browser, not asserted through the API:
+
+| | |
+|---|---|
+| pick james-brennan → click PM | 10,001+ → **121 events**, URL `?lens=pm` |
+| uncheck Show tool calls | 200 rows → **48**, "163 tool calls folded", markers `4 calls Bash×4 13s` |
+| the strip while folding | **unchanged** — same bars, same 7.3 events/min |
+| collapse ratio by project | **11.6× – 41.7×** at page size |
+| URL round-trip | `?lens=agents&tools=0&class=agent,subagent&from=-7d` restores every control cold |
+| `/` then `ab` | **0 requests** + "Keep typing"; `query.py` → 117 rows |
+| timeline | 43 ms, byte-identical under `tools=0`/`tools=1`, bucket sum == `/events` total |
+
+**Four more corrections the data forced**, on top of the three above:
+
+5. **`previous_phase` is misnamed on the wire.** Of the 381 rows carrying it: 185 are a raw Plane
+   state UUID, 131 contain HTML, 136 exceed 40 chars (max 5,518); the short remainder are `urgent`,
+   `high`, `440000`. It is the previous value of *whichever field changed*. The planned `X ← Y`
+   transition headline cannot be built — assuming it produced the live row
+   `JIMB-279 · Backlog ← <p>Filed by the ack wiring test`. A state move now renders as an
+   **arrival** (`→ In Progress`). Producer fix filed as **CANDYS-69**.
+6. **The PM lens was invisible under every project**, which killed the headline story outright.
+   Zero of the 1,100+ `repo.task.*`/`repo.decision.*` rows carry a `working_directory` — they come
+   from the Plane webhook and PM agents, neither of which has a filesystem. Migration 007 adds
+   `project_alias`, generated from the registry, translating the repo NAME they *do* carry
+   (`33god`, `bloodbank`) to its slug (`project`, `bb`). Now 661 PM events under james-brennan.
+7. **`?project=` as `PROJECT_EXPR = %s` is too slow** (658 ms at 24 h, 3,085 ms at 7 d) because as a
+   predicate it runs its correlated lookups over the window rather than the page. Turned inside out
+   into set membership it is 0.067 s — and the resulting second derivation is *proven* equivalent
+   rather than assumed, because zero of 402,478 rows carry conflicting signals.
+8. **The `subagent` dot is codex-only and the API says so.** codex-cli attributes 15,415 subagent
+   rows; claude-code spawned 388 subagents in the same week and emits **zero** attributable rows.
+   `GET /classes` carries a `coverage` field per class and the UI renders an asterisk. A small
+   violet share means "little *codex* subagent work", never "little subagent work" (**CANDYS-65**).
+
+**Still open:** CANDYS-53 (brush, log scale, rate mode), all of E12 (SSE live tail), E13 (CLI and
+skill), E14 (producer contracts), and the three remaining spikes.
+
+---
+
 ## 4. Spikes
 
 | Spike | Question | Unblocks | Timebox |
