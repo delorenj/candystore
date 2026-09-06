@@ -1175,7 +1175,7 @@ def _preview_from_row(row: tuple[Any, ...]) -> dict[str, Any]:
     raw = row[9]
     summary = summarize(raw, row[10], row[11])
     actor = row[6] or {}
-    return {
+    event = {
         "id": str(row[0]),
         "type": row[1],
         "time": _iso(row[2]),
@@ -1190,6 +1190,12 @@ def _preview_from_row(row: tuple[Any, ...]) -> dict[str, Any]:
         "class": row[11],
         "summary": summary,
     }
+    # Extension fields that the preview's column list does not model still
+    # need to reach API consumers — agents deciding what to do with an event
+    # from a dying worktree session cannot wait for a raw-column query.
+    if isinstance(raw, dict) and raw.get("ephemeral") is not None:
+        event["ephemeral"] = raw["ephemeral"]
+    return event
 
 
 def _session_project(events: list[dict[str, Any]]) -> str | None:
