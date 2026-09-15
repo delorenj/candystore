@@ -1,14 +1,16 @@
 {
   "project_name": "Candystore",
   "project_description": "Bloodbank durable event audit trail",
-  "project_slug": "candystore",
   "repo_path": "/home/delorenj/code/33GOD/candystore",
   "ticket_provider": {
     "type": "plane",
     "workspace": "33god",
     "identifier": "CANDYS",
     "board_id": "82e56896-e7fd-466b-826c-1019441c64ca",
-    "state": "active"
+    "state": "active",
+    "board_confirmed_at": "2026-08-28T20:12:51.748Z",
+    "identifier_source": "provider",
+    "identifier_fetched_at": "2026-08-28T20:12:51.748Z"
   },
   "agents": {
     "candystore-pm": {
@@ -22,5 +24,16 @@
       "grace_hours": 0,
       "auto_review": true
     }
-  }
+  },
+  "status": "planned",
+  "source_artifacts": [],
+  "template": {
+    "commonproject": {
+      "enabled": true,
+      "primary_language": "python"
+    }
+  },
+  "created_at": "2026-07-08T19:25:49.459Z",
+  "updated_at": "2026-07-08T19:25:49.459Z",
+  "project_id": "candystore"
 }
