@@ -51,3 +51,17 @@ runtime:
 # Provenance — managed by the template, do not hand-edit.
 provisioned_at: "2026-05-24T06:59:49Z"
 provisioned_by: hermes-agent-template
+
+# Ticket-provider binding. Board/workspace come from .project.json;
+# this block supplies the normalized-state -> Plane lane map.
+ticket_provider:
+  name: plane
+  # Normalized-state -> Plane lane names. REQUIRED, not optional: the
+  # adapter refuses to guess when a Plane state group holds more than one
+  # lane, so every band must be named or the transition fails.
+  backlog:   "Backlog"
+  unstarted: "Todo"
+  started:   "In Progress"
+  in_review: "E2E Testing & QA"
+  completed: "Done"
+  cancelled: "Cancelled"
