@@ -4,13 +4,13 @@
   "repo_path": "/home/delorenj/code/33GOD/candystore",
   "ticket_provider": {
     "type": "plane",
+    "state": "linked",
+    "board_id": "dd2afab7-4ff6-48a5-be4f-2862551c8000",
     "workspace": "33god",
-    "identifier": "CANDYS",
-    "board_id": "82e56896-e7fd-466b-826c-1019441c64ca",
-    "state": "active",
-    "board_confirmed_at": "2026-08-28T20:12:51.748Z",
+    "identifier": "CNDY",
     "identifier_source": "provider",
-    "identifier_fetched_at": "2026-08-28T20:12:51.748Z"
+    "board_confirmed_at": "2026-09-23T04:24:19.661Z",
+    "identifier_fetched_at": "2026-09-23T04:24:19.661Z"
   },
   "agents": {
     "candystore-pm": {
@@ -27,6 +27,6 @@
     }
   },
   "created_at": "2026-07-08T19:25:49.459Z",
-  "updated_at": "2026-07-08T19:25:49.459Z",
+  "updated_at": "2026-09-23T04:24:19.661Z",
   "project_id": "candystore"
 }
