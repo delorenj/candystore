@@ -25,6 +25,17 @@ when its ID is exported by the agent. Hooks supply their native session ID
 explicitly; for manual use, `--exclude-session <id>` does the same. Both UUID
 correlations and historical non-UUID session IDs are supported.
 
+## Agent skill
+
+Load `candystore-context` when resuming project work, switching agent CLIs, or
+recovering recent requests and unfinished work. The canonical definition is
+`~/code/skillex/all-skills/candystore-context/SKILL.md`, selected in Skillex's
+`min-global` set and exposed through the shared agent skill root.
+
+Hindsight, 33GOD Hub, 33GOD project wiring, and recap skills link to this
+procedure at their context-recovery entrypoints. Reuse a relevant startup
+briefing; query manually when its scope or detail needs to change.
+
 ## What the handoff contains
 
 Each session includes its first sampled request and latest follow-up, outcome excerpts, files
