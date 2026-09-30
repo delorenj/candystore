@@ -33,6 +33,25 @@ run = "bash tests/migration_test.sh"
 description = "Run ruff"
 run = "ruff check candystore/ tests/"
 
+[tasks."cli:install"]
+description = "Install the CandyStore CLI for shells and agent startup hooks"
+run = "bash '{{config_root}}/.mise/scripts/install-context-cli.sh'"
+
+[tasks."context:latest"]
+description = "Recover this project's latest work across agent CLIs"
+run = "candystore context latest"
+
+[tasks."deploy:app"]
+description = "Build and recreate only the installed platform CandyStore app"
+run = "docker compose -f '{{config_root}}/../33god-platform/compose.yaml' up -d --build --no-deps candystore"
+
+[tasks."migrate:context"]
+description = "Create context lookup indexes online before recreating the app"
+run = """
+sed 's/CREATE INDEX IF NOT EXISTS/CREATE INDEX CONCURRENTLY IF NOT EXISTS/' '{{config_root}}/migrations/008_context_native_sessions.sql' | docker compose -f '{{config_root}}/../33god-platform/compose.yaml' exec -T candystore-postgres psql -U candystore -d candystore -v ON_ERROR_STOP=1
+docker compose -f '{{config_root}}/../33god-platform/compose.yaml' exec -T candystore-postgres psql -U candystore -d candystore -v ON_ERROR_STOP=1 -c 'ANALYZE events'
+"""
+
 [tasks."project:sync"]
 description = "Resolve trail working directories to pjangler registry projects"
 run = "python -m candystore.projects"

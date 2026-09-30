@@ -26,6 +26,8 @@ cd web && npm install && npm run build
 python -m candystore.main
 mise run up      # full stack: postgres + app + dapr sidecar (compose.yml)
 mise run down    # stop stack, volumes preserved
+mise run cli:install
+candystore context latest  # last three project sessions across CLIs
 ```
 
 > Mise Tasks are the entry point for all workflows, dev functions, scripts, etc.
@@ -58,6 +60,12 @@ events between two databases.
 - CandyStore should also provide a rich skill library that synergizes with the underlying CLI and API that advertise the capabilities the agents can tap into when working across the 33GOD pipeline.
 
 ## Things CandyStore Offers to Agents
+
+- `candystore context latest` returns a bounded, evidence-backed handoff across
+  CLI sessions in the current registered project. Use `--project`, `--since`,
+  `--sessions`, `--exclude-session`, and `--json` to control it. Native startup
+  hooks share this command through Bloodbank's `candystore-context` handler.
+  See `docs/context-handoff.md` for coverage and deployment details.
 
 - When switching between agents, a CandyStore query can return a list of every top-level (orchestrator) agent action instead of the full session history. When it finds an action of interest, it can dive deeper and query all subagents and/or tool calls bound by a parent action.
 

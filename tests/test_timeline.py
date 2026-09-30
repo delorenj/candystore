@@ -84,7 +84,8 @@ def test_series_are_capped_and_the_remainder_is_kept_not_dropped(db, sample_even
     still sum to the true total, never silently discarded."""
     producers = [
         ("agent", {"type": "agent_cli", "cli": "claude"}, "claude-code", {}),
-        ("subagent", {"type": "agent_cli", "cli": "codex"}, "codex-cli", {"payload": {"agent_id": "a"}}),
+        ("subagent", {"type": "agent_cli", "cli": "codex"}, "codex-cli",
+         {"payload": {"agent_id": "a"}}),
         ("pm_agent", {"type": "agent_cli", "cli": "claude"}, "hermes-agent:33god-pm", {}),
         ("ticket_webhook", {"type": "ticket_provider"}, "n8n-plane-webhook", {}),
         ("n8n_workflow", {"type": "service"}, "n8n", {}),

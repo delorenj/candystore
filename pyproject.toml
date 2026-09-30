@@ -14,7 +14,7 @@ dev = [
 ]
 
 [project.scripts]
-candystore = "candystore.main:main"
+candystore = "candystore.cli:main"
 
 [build-system]
 requires = ["hatchling"]

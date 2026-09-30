@@ -15,6 +15,7 @@ from uuid import UUID
 import psycopg2
 
 from candystore import stats
+from candystore.context import ContextError, latest_context
 from candystore.db import check_connection, init_schema, record_dead_letter
 from candystore.ingest import handle_event, known_event_routes, subscribe_response
 from candystore.query import (
@@ -79,6 +80,25 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(503, {"ready": False, "error": str(exc)})
                 return
             self._send_empty(204 if ok else 503)
+            return
+
+        if path == "/context/latest":
+            qs = parse_qs(parsed.query)
+            try:
+                response = latest_context(
+                    project=_first(qs, "project"), cwd=_first(qs, "cwd"),
+                    since=_first(qs, "since"),
+                    sessions=int(_first(qs, "sessions") or "3"),
+                    exclude_session=_first(qs, "exclude_session"),
+                )
+            except (ContextError, ValueError) as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
+            except psycopg2.Error:
+                logger.exception("context query failed")
+                self._send_json(503, {"error": "context query unavailable; retry later"})
+                return
+            self._send_json(200, response)
             return
 
         if path == "/events":
