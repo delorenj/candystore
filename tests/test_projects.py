@@ -12,7 +12,7 @@ import pytest
 
 from candystore.projects import Project, RegistryError, parse_registry, resolve
 
-# The registry as `pjangler project list --json` actually returns it, trimmed to
+# The registry as `pjangler list --json` actually returns it, trimmed to
 # the projects these rules turn on. Note `bb`: the slug is not the directory
 # basename, which is why basename-derived project names cannot be repaired by
 # tidying them up.

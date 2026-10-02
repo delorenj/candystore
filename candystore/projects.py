@@ -7,7 +7,7 @@ wrong in ways that are easy to miss. Measured over 7 days it reports git
 worktrees (`feat-cartesia-agents`), subdirectories (`.agents`, `dist`, `web`,
 `mirror`) and bare-repo suffixes (`james-brennan.git`) as top-level projects.
 
-The registry is the authority: `pjangler project list --json` knows each
+The registry is the authority: `pjangler list --json` knows each
 project's slug, absolute repo path and board prefix. This module matches
 directories against it, writes the answers to `project_dir_map`, and leaves
 what it cannot resolve visibly unresolved.
@@ -70,7 +70,7 @@ def load_registry() -> list[Project]:
         raise RegistryError(f"{PJANGLER_BIN} is not on PATH")
     try:
         completed = subprocess.run(  # noqa: S603 - fixed binary, no shell, no user input
-            [PJANGLER_BIN, "project", "list", "--json"],
+            [PJANGLER_BIN, "list", "--json"],
             capture_output=True,
             text=True,
             timeout=PJANGLER_TIMEOUT_SECONDS,
@@ -78,10 +78,10 @@ def load_registry() -> list[Project]:
         )
     except subprocess.CalledProcessError as exc:
         raise RegistryError(
-            f"{PJANGLER_BIN} project list --json failed: {exc.stderr.strip()}"
+            f"{PJANGLER_BIN} list --json failed: {exc.stderr.strip()}"
         ) from exc
     except subprocess.TimeoutExpired as exc:
-        raise RegistryError(f"{PJANGLER_BIN} project list --json timed out") from exc
+        raise RegistryError(f"{PJANGLER_BIN} list --json timed out") from exc
 
     try:
         payload = json.loads(completed.stdout)
