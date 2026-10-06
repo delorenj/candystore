@@ -18,4 +18,14 @@ if [[ -L "$task_shim" ]] && command -v mise >/dev/null; then
     rm -- "$task_shim"
   fi
 fi
-"${UV_TOOL_BIN_DIR:-$HOME/.local/bin}/candystore" --help
+installed="${UV_TOOL_BIN_DIR:-$HOME/.local/bin}/candystore"
+"$installed" --help
+
+# A console script left in an active interpreter (a `pip install -e` into the
+# global mise python, say) sits ahead of ~/.local/bin on PATH and keeps running
+# whatever entry point it was generated with. Say so rather than imply success.
+resolved="$(command -v candystore || true)"
+if [[ -n "$resolved" && "$(readlink -f -- "$resolved")" != "$(readlink -f -- "$installed")" ]]; then
+  echo "warning: candystore on PATH is $resolved, not $installed" >&2
+  echo "warning: uninstall that copy from its interpreter (<python> -m pip uninstall candystore), then run 'mise reshim'" >&2
+fi
