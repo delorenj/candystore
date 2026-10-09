@@ -204,7 +204,7 @@ def latest_context(
             # their recorded alias instead of guessing a producer's namespace.
             if not correlation:
                 cur.execute(
-                    f"SELECT DISTINCT correlationid FROM events WHERE time >= %s "
+                    f"SELECT correlationid FROM events WHERE time >= %s "
                     f"AND {NATIVE_SESSION_EXPR} = %s AND correlationid IS NOT NULL "
                     "AND type = ANY(%s) LIMIT 10",
                     (
