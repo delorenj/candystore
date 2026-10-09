@@ -21,6 +21,7 @@ web/.vite/
 .env.local
 *.db
 *.log
+runtime/
 agents/hermes/*/runtime/
 
 # Worktrees and editor files

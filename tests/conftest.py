@@ -49,7 +49,7 @@ REQUIRE_DB_ENV = "CANDYSTORE_REQUIRE_DB"
 # Maintenance trap worth knowing: a future migration that adds a table the
 # fixture should clear must be added here, or that table is neither counted
 # nor truncated and the row check quietly covers less than it appears to.
-TRUNCATED_TABLES: tuple[str, ...] = ("events", "dead_letter")
+TRUNCATED_TABLES: tuple[str, ...] = ("events", "event_embeddings", "dead_letter")
 
 # `project_dir_map` and `projects` (migrations 005/006) are deliberately NOT in
 # the list above. They are reference data synced from the pjangler registry, not
