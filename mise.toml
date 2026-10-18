@@ -43,7 +43,10 @@ run = "candystore context latest"
 
 [tasks."deploy:app"]
 description = "Build and recreate only the installed platform CandyStore app"
-run = "docker compose -f '{{config_root}}/../33god-platform/compose.yaml' up -d --build --no-deps candystore"
+run = """
+docker compose -f '{{config_root}}/../33god-platform/compose.yaml' up -d --build --no-deps candystore
+docker network connect --alias candystore proxy candystore 2>/dev/null || true
+"""
 
 [tasks."migrate:context"]
 description = "Create context lookup indexes online before recreating the app"
