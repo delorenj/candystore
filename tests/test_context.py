@@ -115,6 +115,33 @@ def test_historical_dialects_and_bounded_text():
     assert len(summary["requests"]) == 1
 
 
+def test_hermes_user_message_and_canonical_reply_text_in_handoff():
+    summary = summarize_session(
+        [
+            event(
+                "conversation.turn.started",
+                {
+                    "prompt_text": "",
+                    "payload": {"extra": {"user_message": "Audit the infrastructure fleet"}},
+                },
+                1,
+            ),
+            event(
+                "conversation.turn.completed",
+                {
+                    "outcome": "success",
+                    "reply_text": "Fleet audit complete; remaining work: rotate stale token.",
+                },
+                2,
+            ),
+        ],
+        {},
+    )
+    assert summary["requests"][0]["text"] == "Audit the infrastructure fleet"
+    assert "Fleet audit complete" in summary["outcomes"][0]["text"]
+    assert "remaining work: rotate stale token." in summary["unfinished"][0]["text"]
+
+
 def test_pending_work_at_end_of_a_long_response_keeps_its_evidence():
     message = "Completed implementation. " * 100 + "\nRemaining work: deploy the app."
     summary = summarize_session(

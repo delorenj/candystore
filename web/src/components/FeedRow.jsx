@@ -12,12 +12,31 @@ import { PROVENANCE_FALLBACK_COLOR } from "../state/feedReducer.js";
  *
  * Paths are middle-truncated, not end-truncated: in this corpus the
  * discriminating token is at the end (`.../candystore/candystore/query.py`).
+ * Natural-language dialog (prompts and replies) is end-truncated so the
+ * opening sentence stays readable.
  */
 
-function middleTruncate(text, max = 92) {
+function isPathLike(text) {
+  return Boolean(text && (text.startsWith("/") || (text.includes("/") && !text.includes(" "))));
+}
+
+function formatBody(text, max = 110) {
   if (!text || text.length <= max) return text;
-  const head = Math.ceil((max - 1) * 0.4);
-  return `${text.slice(0, head)}…${text.slice(text.length - (max - 1 - head))}`;
+  if (isPathLike(text)) {
+    const head = Math.ceil((max - 1) * 0.4);
+    return `${text.slice(0, head)}…${text.slice(text.length - (max - 1 - head))}`;
+  }
+  return `${text.slice(0, max - 1)}…`;
+}
+
+function hasDialogSummary(summary) {
+  if (!summary) return false;
+  return Boolean(
+    summary.reply_preview ||
+      summary.prompt_preview ||
+      summary.message_preview ||
+      summary.transcript_preview,
+  );
 }
 
 function timeOfDay(iso) {
@@ -26,9 +45,11 @@ function timeOfDay(iso) {
 }
 
 export default function FeedRow({ event, colors }) {
-  const row = event.summary?.row || {};
+  const summary = event.summary || {};
+  const row = summary.row || {};
   const dot = colors[row.class] || PROVENANCE_FALLBACK_COLOR;
   const failed = row.ok === false;
+  const dialog = hasDialogSummary(summary);
 
   return (
     <Link
@@ -55,8 +76,14 @@ export default function FeedRow({ event, colors }) {
           {row.headline}
         </span>
         {row.body ? (
-          <span className="ml-2 font-mono text-xs text-zinc-500">
-            {middleTruncate(row.body)}
+          <span
+            className={
+              dialog
+                ? "ml-2 text-xs text-zinc-300"
+                : "ml-2 font-mono text-xs text-zinc-500"
+            }
+          >
+            {formatBody(row.body)}
           </span>
         ) : null}
       </span>
@@ -72,3 +99,4 @@ function formatDuration(ms) {
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
   return `${Math.round(ms / 60_000)}m`;
 }
+

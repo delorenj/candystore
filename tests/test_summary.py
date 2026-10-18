@@ -150,3 +150,88 @@ def test_unknown_type_still_falls_back_to_generic(sample_event):
     summary = summarize(sample_event(type="bloodbank.invented.thing.happened"))
 
     assert summary["title"] == "bloodbank.invented.thing.happened"
+
+
+def test_turn_completed_surfaces_reply_dialog(sample_event):
+    summary = summarize(
+        sample_event(
+            type="bloodbank.conversation.turn.completed",
+            data={
+                "outcome": "success",
+                "session_id": "20261018_031455_ecc09bd2",
+                "reply_text": "All 6 infrastructure services are healthy.",
+                "reply_length": 42,
+                "delivered": True,
+                "working_directory": "/home/delorenj/code/infrastructure",
+            },
+        ),
+        "infrastructure",
+        "pm_agent",
+    )
+
+    assert summary["title"] == "Turn completed"
+    assert summary["status"] == "success"
+    assert summary["reply_preview"] == "All 6 infrastructure services are healthy."
+    assert summary["row"]["body"] == "All 6 infrastructure services are healthy."
+    assert summary["row"]["ok"] is True
+
+
+def test_turn_started_reads_hermes_user_message_when_prompt_text_is_empty(sample_event):
+    summary = summarize(
+        sample_event(
+            type="bloodbank.conversation.turn.started",
+            data={
+                "prompt_text": "",
+                "session_id": "20261018_031455_ecc09bd2",
+                "payload": {
+                    "extra": {
+                        "is_first_turn": True,
+                        "model": "claude-opus-4-7",
+                        "user_message": "Run the nightly infrastructure health check.",
+                    }
+                },
+                "working_directory": "/home/delorenj/code/infrastructure",
+            },
+        ),
+        "infrastructure",
+        "pm_agent",
+    )
+
+    assert summary["title"] == "Turn started - 1"
+    assert summary["turn_index"] == 1
+    assert summary["model"] == "claude-opus-4-7"
+    assert summary["prompt_preview"] == "Run the nightly infrastructure health check."
+    assert summary["row"]["body"] == "Run the nightly infrastructure health check."
+
+
+def test_session_start_and_end_prefer_dialog_over_working_directory(sample_event):
+    started = summarize(
+        sample_event(
+            type="bloodbank.agent.session.started",
+            data={
+                "prompt_text": "Check the health of all services",
+                "working_directory": "/home/delorenj/code/infrastructure",
+            },
+        ),
+        "infrastructure",
+        "pm_agent",
+    )
+    assert started["prompt_preview"] == "Check the health of all services"
+    assert started["row"]["body"] == "Check the health of all services"
+
+    ended = summarize(
+        sample_event(
+            type="bloodbank.agent.session.ended",
+            data={
+                "prompt_text": "Check the health of all services",
+                "reply_text": "All services are healthy.",
+                "working_directory": "/home/delorenj/code/infrastructure",
+            },
+        ),
+        "infrastructure",
+        "pm_agent",
+    )
+    assert ended["prompt_preview"] == "Check the health of all services"
+    assert ended["reply_preview"] == "All services are healthy."
+    assert ended["row"]["body"] == "All services are healthy."
+

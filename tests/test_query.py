@@ -205,3 +205,66 @@ def test_session_summary_counts_post_migration_types(db, sample_event):
     assert summary["turns"] == 42
     assert summary["duration_seconds"] == 600
     assert summary["events_count"] == 7
+
+
+def test_session_events_enrich_session_start_and_end_with_dialog(db, sample_event):
+    from candystore.query import get_event_with_project
+
+    session_id = "550e8400-e29b-41d4-a716-446655440999"
+    start_id = "550e8400-e29b-41d4-a716-446655440901"
+    turn_start_id = "550e8400-e29b-41d4-a716-446655440902"
+    turn_end_id = "550e8400-e29b-41d4-a716-446655440903"
+    end_id = "550e8400-e29b-41d4-a716-446655440904"
+
+    assert insert_event(
+        sample_event(
+            id=start_id,
+            correlationid=session_id,
+            time="2026-05-24T16:00:00Z",
+            type="bloodbank.agent.session.started",
+            data={"working_directory": "/home/delorenj/code/33GOD/candystore"},
+        )
+    )
+    assert insert_event(
+        sample_event(
+            id=turn_start_id,
+            correlationid=session_id,
+            time="2026-05-24T16:00:01Z",
+            type="bloodbank.conversation.turn.started",
+            data={
+                "prompt_text": "",
+                "payload": {"extra": {"user_message": "Show dialog in session start"}},
+            },
+        )
+    )
+    assert insert_event(
+        sample_event(
+            id=turn_end_id,
+            correlationid=session_id,
+            time="2026-05-24T16:00:05Z",
+            type="bloodbank.conversation.turn.completed",
+            data={"outcome": "success", "reply_text": "Dialog is now visible everywhere."},
+        )
+    )
+    assert insert_event(
+        sample_event(
+            id=end_id,
+            correlationid=session_id,
+            time="2026-05-24T16:00:06Z",
+            type="bloodbank.agent.session.ended",
+            data={"working_directory": "/home/delorenj/code/33GOD/candystore"},
+        )
+    )
+
+    listed = list_events(correlationid=session_id, limit=10)["events"]
+    by_id = {ev["id"]: ev for ev in listed}
+    assert by_id[start_id]["summary"]["row"]["body"] == "Show dialog in session start"
+    assert by_id[end_id]["summary"]["row"]["body"] == "Dialog is now visible everywhere."
+
+    raw_start, _ = get_event_with_project(start_id)
+    assert raw_start["data"]["prompt_text"] == "Show dialog in session start"
+
+    timeline = get_session_events(session_id)
+    assert timeline[0]["summary"]["row"]["body"] == "Show dialog in session start"
+    assert timeline[-1]["summary"]["row"]["body"] == "Dialog is now visible everywhere."
+

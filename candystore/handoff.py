@@ -139,7 +139,9 @@ def summarize_session(events: list[dict], metadata: dict) -> dict:
                     data,
                     "prompt_text",
                     "prompt",
+                    "user_message",
                     "payload.prompt",
+                    "payload.extra.user_message",
                     "payload.extra.prompt",
                     "payload.user_message",
                 ),
@@ -148,8 +150,10 @@ def summarize_session(events: list[dict], metadata: dict) -> dict:
         if kind.endswith(("conversation.turn.completed", "agent.session.ended")):
             message = _value(
                 data,
+                "reply_text",
                 "last_assistant_message",
                 "summary",
+                "payload.reply_text",
                 "payload.last_assistant_message",
                 "payload.prompt_response",
                 "payload.extra.final_response",

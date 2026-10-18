@@ -8,7 +8,13 @@ from uuid import UUID
 
 from candystore.db import cursor
 from candystore.projects import WORK_DIR_EXPR
-from candystore.summarize import UNRESOLVED_PROJECT, canonical_type, summarize
+from candystore.summarize import (
+    UNRESOLVED_PROJECT,
+    _prompt_text,
+    _reply_text,
+    canonical_type,
+    summarize,
+)
 
 # The `type` column holds two shapes forever: the historical five-token
 # `bloodbank.v1.<domain>.<entity>.<action>` on ~718k rows already in the table,
@@ -34,8 +40,16 @@ SCOPE_TYPE_EXPR = "regexp_replace(type, '^bloodbank\\.(v[0-9]+\\.)?', '')"
 #      the v1 tool_call spelling reported 0 tools for every session recorded
 #      since the rename.
 TURN_STARTED_TYPE = "bloodbank.conversation.turn.started"
+TURN_COMPLETED_TYPE = "bloodbank.conversation.turn.completed"
 TOOL_REQUESTED_TYPE = "bloodbank.agent.tool.requested"
 TOOL_INVOKED_TYPE = "bloodbank.agent.tool.invoked"
+
+SESSION_START_TYPES = frozenset(
+    {
+        "bloodbank.agent.session.started",
+        "bloodbank.cli.session.started",
+    }
+)
 
 # A session ends under EITHER spelling. `agent.session.ended` supersedes
 # `cli.session.ended` for agent CLIs (bloodbank/docs/event-naming.md) but both
@@ -51,6 +65,8 @@ SESSION_END_TYPES = frozenset(
         "bloodbank.cli.session.ended",
     }
 )
+
+SESSION_TYPES = SESSION_START_TYPES | SESSION_END_TYPES
 
 # The project an event belongs to: a PJangler registry slug, resolved through
 # project_dir_map (migrations 005/006), or NULL when nothing claims it.
@@ -450,8 +466,15 @@ def list_events(
             counted = cur.fetchone()[0]
         cur.execute(select_sql, [*params, limit, offset])
         rows = cur.fetchall()
+        dialog_by_session = _fetch_session_dialog(
+            cur,
+            [str(row[8]) for row in rows if row[8] and canonical_type(row[1]) in SESSION_TYPES],
+        )
 
-    events = [_preview_from_row(row) for row in rows]
+    events = [
+        _preview_from_row(row, dialog_by_session.get(str(row[8])) if row[8] else None)
+        for row in rows
+    ]
     return {
         "events": events,
         "total": counted,
@@ -477,7 +500,13 @@ def get_event_record(event_id: str) -> dict[str, Any] | None:
     with cursor() as cur:
         cur.execute(sql, (event_id,))
         row = cur.fetchone()
-    return _preview_from_row(row) if row else None
+        if not row:
+            return None
+        dialog_by_session = _fetch_session_dialog(
+            cur,
+            [str(row[8])] if row[8] and canonical_type(row[1]) in SESSION_TYPES else [],
+        )
+    return _preview_from_row(row, dialog_by_session.get(str(row[8])) if row[8] else None)
 
 
 # ---------------------------------------------------------------------------
@@ -600,9 +629,20 @@ def get_event_with_project(event_id: str) -> tuple[dict[str, Any], str | None] |
     its `project` agrees with the one /events reported for the same row.
     """
     with cursor() as cur:
-        cur.execute(f"SELECT raw, {PROJECT_EXPR} FROM events WHERE id = %s", (event_id,))
+        cur.execute(
+            f"SELECT raw, {PROJECT_EXPR}, correlationid, type FROM events WHERE id = %s",
+            (event_id,),
+        )
         row = cur.fetchone()
-    return (row[0], row[1]) if row else None
+        if not row:
+            return None
+        raw, project, correlationid, event_type = row
+        dialog = None
+        if correlationid and canonical_type(event_type) in SESSION_TYPES:
+            dialog = _fetch_session_dialog(cur, [str(correlationid)]).get(str(correlationid))
+    if dialog and isinstance(raw, dict):
+        raw, _ = _merge_session_dialog(raw, raw.get("data"), event_type, dialog)
+    return (raw, project)
 
 
 def get_event(event_id: str) -> dict[str, Any] | None:
@@ -624,9 +664,10 @@ def get_session_events(correlationid: str) -> list[dict[str, Any]]:
         cur.execute(sql, (correlationid,))
         rows = cur.fetchall()
 
+    dialog = _extract_session_dialog((row[1], row[7]) for row in rows)
     events = []
     for row in rows:
-        raw = row[9]
+        raw, data = _merge_session_dialog(row[9], row[7], row[1], dialog)
         events.append(
             {
                 "id": str(row[0]),
@@ -636,7 +677,7 @@ def get_session_events(correlationid: str) -> list[dict[str, Any]]:
                 "service": row[4],
                 "domain": row[5],
                 "actor": row[6],
-                "data": row[7],
+                "data": data,
                 "correlationid": str(row[8]) if row[8] else None,
                 "project": row[10],
                 "class": row[11],
@@ -1171,8 +1212,90 @@ def _as_uuid(value: str) -> str | None:
         return None
 
 
-def _preview_from_row(row: tuple[Any, ...]) -> dict[str, Any]:
-    raw = row[9]
+def _extract_session_dialog(
+    turn_rows: Any,
+) -> dict[str, str]:
+    """Derive a session's opening prompt and latest reply from its ordered turn rows."""
+    dialog: dict[str, str] = {}
+    for event_type, data in turn_rows:
+        if not isinstance(data, dict):
+            continue
+        kind = canonical_type(event_type)
+        if kind == TURN_STARTED_TYPE and "prompt_text" not in dialog:
+            prompt = _prompt_text(data)
+            if prompt:
+                dialog["prompt_text"] = prompt
+        elif kind == TURN_COMPLETED_TYPE:
+            reply = _reply_text(data)
+            if reply:
+                dialog["reply_text"] = reply
+            if "prompt_text" not in dialog:
+                prompt = _prompt_text(data)
+                if prompt:
+                    dialog["prompt_text"] = prompt
+    return dialog
+
+
+def _fetch_session_dialog(
+    cur: Any,
+    correlation_ids: list[str],
+) -> dict[str, dict[str, str]]:
+    """Batch-resolve initial prompt and final reply for a set of session correlation IDs."""
+    valid_ids = sorted({cid for cid in correlation_ids if _as_uuid(cid)})
+    if not valid_ids:
+        return {}
+    cur.execute(
+        """
+        SELECT correlationid::text, type, data
+        FROM events
+        WHERE correlationid = ANY(%s::uuid[])
+          AND type IN (
+              'bloodbank.conversation.turn.started',
+              'bloodbank.v1.conversation.turn.started',
+              'bloodbank.conversation.turn.completed',
+              'bloodbank.v1.conversation.turn.completed'
+          )
+        ORDER BY time ASC
+        """,
+        (valid_ids,),
+    )
+    grouped: dict[str, list[tuple[str, Any]]] = {}
+    for cid, event_type, data in cur.fetchall():
+        grouped.setdefault(cid, []).append((event_type, data))
+    return {cid: _extract_session_dialog(turns) for cid, turns in grouped.items()}
+
+
+def _merge_session_dialog(
+    raw: Any,
+    data: Any,
+    event_type: Any,
+    dialog: dict[str, str] | None,
+) -> tuple[Any, Any]:
+    """Attach correlated session prompt/reply onto session.started and session.ended."""
+    if not dialog or not isinstance(raw, dict):
+        return raw, data
+    kind = canonical_type(event_type)
+    if kind not in SESSION_TYPES:
+        return raw, data
+
+    merged_data = dict(data) if isinstance(data, dict) else {}
+    changed = False
+    if "prompt_text" in dialog and not _prompt_text(merged_data):
+        merged_data["prompt_text"] = dialog["prompt_text"]
+        changed = True
+    if kind in SESSION_END_TYPES and "reply_text" in dialog and not _reply_text(merged_data):
+        merged_data["reply_text"] = dialog["reply_text"]
+        changed = True
+    if not changed:
+        return raw, data
+    return {**raw, "data": merged_data}, merged_data
+
+
+def _preview_from_row(
+    row: tuple[Any, ...],
+    dialog: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    raw, data = _merge_session_dialog(row[9], row[7], row[1], dialog)
     summary = summarize(raw, row[10], row[11])
     actor = row[6] or {}
     event = {
@@ -1183,7 +1306,7 @@ def _preview_from_row(row: tuple[Any, ...]) -> dict[str, Any]:
         "service": row[4],
         "domain": row[5],
         "actor": actor,
-        "data": row[7],
+        "data": data,
         "correlationid": str(row[8]) if row[8] else None,
         "cli": actor.get("cli"),
         "project": row[10],

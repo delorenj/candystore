@@ -1,6 +1,30 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { eventTime, getJson, shortId } from "../api.js";
+
+function timelineBody(event) {
+  const s = event.summary || {};
+  return (
+    s.reply_preview ||
+    s.prompt_preview ||
+    s.message_preview ||
+    s.transcript_preview ||
+    s.row?.body ||
+    null
+  );
+}
+
+function isDialogEvent(event) {
+  const s = event.summary || {};
+  return Boolean(
+    s.reply_preview ||
+      s.prompt_preview ||
+      s.message_preview ||
+      s.transcript_preview ||
+      (event.type || "").includes("conversation.") ||
+      (event.type || "").includes("session."),
+  );
+}
 
 export default function SessionTimeline() {
   const { id } = useParams();
@@ -66,30 +90,48 @@ export default function SessionTimeline() {
       <div className="text-sm text-zinc-500">{status}</div>
 
       <ol className="space-y-3">
-        {events.map((event, index) => (
-          <li key={event.id} className="grid grid-cols-[36px_1fr] gap-3">
-            <div className="flex flex-col items-center">
-              <span className="grid h-7 w-7 place-items-center rounded-full border border-line bg-zinc-900 text-xs text-zinc-400">
-                {index + 1}
-              </span>
-              {index < events.length - 1 ? <span className="mt-2 h-full w-px bg-line" /> : null}
-            </div>
-            <div className="rounded-md border border-line bg-panel p-4">
-              <div className="flex flex-wrap items-start justify-between gap-2">
-                <div>
-                  <div className="text-sm font-medium text-zinc-100">
-                    {event.summary?.title || event.type}
-                  </div>
-                  <div className="mt-1 font-mono text-xs text-zinc-500">{event.type}</div>
-                </div>
-                <div className="text-right text-xs text-zinc-500">
-                  <div>{eventTime(event.time)}</div>
-                  <div className="font-mono">{shortId(event.id)}</div>
-                </div>
+        {events.map((event, index) => {
+          const body = timelineBody(event);
+          const dialog = isDialogEvent(event);
+          return (
+            <li key={event.id} className="grid grid-cols-[36px_1fr] gap-3">
+              <div className="flex flex-col items-center">
+                <span className="grid h-7 w-7 place-items-center rounded-full border border-line bg-zinc-900 text-xs text-zinc-400">
+                  {index + 1}
+                </span>
+                {index < events.length - 1 ? <span className="mt-2 h-full w-px bg-line" /> : null}
               </div>
-            </div>
-          </li>
-        ))}
+              <Link
+                to={`/events/${event.id}`}
+                className="focus-ring block rounded-md border border-line bg-panel p-4 transition-colors hover:bg-zinc-800/60"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <div className="text-sm font-medium text-zinc-100">
+                      {event.summary?.title || event.type}
+                    </div>
+                    <div className="mt-1 font-mono text-xs text-zinc-500">{event.type}</div>
+                  </div>
+                  <div className="text-right text-xs text-zinc-500">
+                    <div>{eventTime(event.time)}</div>
+                    <div className="font-mono">{shortId(event.id)}</div>
+                  </div>
+                </div>
+                {body ? (
+                  <div
+                    className={
+                      dialog
+                        ? "mt-3 whitespace-pre-wrap break-words rounded border border-zinc-800 bg-zinc-950/70 p-3 text-sm leading-relaxed text-zinc-200"
+                        : "mt-2 break-words font-mono text-xs text-zinc-400"
+                    }
+                  >
+                    {body}
+                  </div>
+                ) : null}
+              </Link>
+            </li>
+          );
+        })}
       </ol>
     </div>
   );
@@ -103,3 +145,4 @@ function Metric({ label, value }) {
     </div>
   );
 }
+

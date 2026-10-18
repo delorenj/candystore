@@ -124,10 +124,117 @@ def _preview(value: Any, limit: int = 200) -> str | None:
     return value if len(value) <= limit else value[: limit - 1] + "\u2026"
 
 
+def _non_empty_str(value: Any) -> str | None:
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped:
+            return value
+    return None
+
+
+def _prompt_text(data: dict[str, Any]) -> str | None:
+    """Extract the human or orchestrator prompt across producer dialects.
+
+    Producers do not agree on one slot: Claude Code and Codex CLI populate
+    `data.prompt_text`, while Hermes `pre_llm_call` leaves `prompt_text` empty
+    and sends `data.payload.extra.user_message`, subagent invocations carry
+    `data.payload.child_goal`, and command envelopes carry `context.prompt`.
+    """
+    for key in ("prompt_text", "prompt", "user_message", "user_input", "user_prompt"):
+        found = _non_empty_str(data.get(key))
+        if found:
+            return found
+
+    payload = data.get("payload") if isinstance(data.get("payload"), dict) else {}
+    for key in (
+        "prompt_text",
+        "prompt",
+        "user_message",
+        "user_input",
+        "user_prompt",
+        "child_goal",
+    ):
+        found = _non_empty_str(payload.get(key))
+        if found:
+            return found
+
+    extra = payload.get("extra") if isinstance(payload.get("extra"), dict) else {}
+    for key in ("user_message", "prompt_text", "prompt", "user_input", "user_prompt"):
+        found = _non_empty_str(extra.get(key))
+        if found:
+            return found
+
+    history = extra.get("conversation_history")
+    if isinstance(history, list):
+        for entry in reversed(history):
+            if isinstance(entry, dict) and entry.get("role") == "user":
+                found = _non_empty_str(entry.get("content"))
+                if found:
+                    return found
+
+    context = data.get("context") if isinstance(data.get("context"), dict) else {}
+    for key in ("prompt", "user_message", "prompt_text"):
+        found = _non_empty_str(context.get(key))
+        if found:
+            return found
+
+    return None
+
+
+def _reply_text(data: dict[str, Any]) -> str | None:
+    """Extract the assistant or subagent reply across producer dialects."""
+    for key in ("reply_text", "last_assistant_message", "final_response", "response"):
+        found = _non_empty_str(data.get(key))
+        if found:
+            return found
+
+    payload = data.get("payload") if isinstance(data.get("payload"), dict) else {}
+    for key in (
+        "reply_text",
+        "last_assistant_message",
+        "prompt_response",
+        "final_response",
+        "response",
+        "child_summary",
+    ):
+        found = _non_empty_str(payload.get(key))
+        if found:
+            return found
+
+    extra = payload.get("extra") if isinstance(payload.get("extra"), dict) else {}
+    for key in ("final_response", "reply_text", "response", "last_assistant_message"):
+        found = _non_empty_str(extra.get(key))
+        if found:
+            return found
+
+    handoff = data.get("handoff") if isinstance(data.get("handoff"), dict) else {}
+    found = _non_empty_str(handoff.get("summary"))
+    if found:
+        return found
+
+    return None
+
+
+def _dialog_text(data: dict[str, Any]) -> str | None:
+    """Extract general dialog, message, or transcription text."""
+    for key in ("transcript_text", "text", "message", "content"):
+        found = _non_empty_str(data.get(key))
+        if found:
+            return found
+    payload = data.get("payload") if isinstance(data.get("payload"), dict) else {}
+    for key in ("transcript_text", "text", "message", "content"):
+        found = _non_empty_str(payload.get(key))
+        if found:
+            return found
+    return None
+
+
 def _session_ended(env: dict[str, Any]) -> dict[str, Any]:
     data = env.get("data") or {}
     actor = env.get("actor") or {}
     cli = actor.get("cli")
+    prompt = _prompt_text(data)
+    reply = _reply_text(data)
     return {
         "title": f"Session ended - {_PROJECT_PLACEHOLDER} ({cli or 'unknown'})",
         "cli": cli,
@@ -140,6 +247,8 @@ def _session_ended(env: dict[str, Any]) -> dict[str, Any]:
         "git_commits": data.get("git_commits"),
         "final_status": data.get("final_status"),
         "end_reason": data.get("end_reason"),
+        "prompt_preview": _preview(prompt),
+        "reply_preview": _preview(reply),
         "working_directory": data.get("working_directory"),
     }
 
@@ -147,10 +256,12 @@ def _session_ended(env: dict[str, Any]) -> dict[str, Any]:
 def _session_started(env: dict[str, Any]) -> dict[str, Any]:
     data = env.get("data") or {}
     actor = env.get("actor") or {}
+    prompt = _prompt_text(data)
     return {
         "title": f"Session started - {_PROJECT_PLACEHOLDER}",
         "cli": actor.get("cli"),
         "project": None,
+        "prompt_preview": _preview(prompt),
         "working_directory": data.get("working_directory"),
         "git_branch": data.get("git_branch"),
         "git_remote": data.get("git_remote"),
@@ -159,25 +270,102 @@ def _session_started(env: dict[str, Any]) -> dict[str, Any]:
 
 def _turn_index(data: dict[str, Any]) -> Any:
     """turn_index if the producer sent one, else the `<thread>:<n>` suffix."""
-    if data.get("turn_index") is not None:
-        return data["turn_index"]
+    for key in ("turn_index", "turn_number"):
+        if data.get(key) is not None:
+            return data[key]
     turn_id = data.get("turn_id")
     if isinstance(turn_id, str) and ":" in turn_id:
         tail = turn_id.rsplit(":", 1)[1]
         if tail.isdigit():
             return int(tail)
+    payload = data.get("payload") if isinstance(data.get("payload"), dict) else {}
+    for key in ("turn_index", "turn_number"):
+        if payload.get(key) is not None:
+            return payload[key]
+    extra = payload.get("extra") if isinstance(payload.get("extra"), dict) else {}
+    if extra.get("turn_index") is not None:
+        return extra["turn_index"]
+    if extra.get("is_first_turn") is True:
+        return 1
     return None
 
 
 def _turn_started(env: dict[str, Any]) -> dict[str, Any]:
     data = env.get("data") or {}
+    actor = env.get("actor") or {}
+    payload = data.get("payload") if isinstance(data.get("payload"), dict) else {}
+    extra = payload.get("extra") if isinstance(payload.get("extra"), dict) else {}
     index = _turn_index(data)
+    prompt = _prompt_text(data)
     return {
         "title": f"Turn started - {index if index is not None else 'unknown'}",
         "session_id": data.get("session_id") or data.get("thread_id"),
         "turn_index": index,
-        "model": data.get("model"),
-        "prompt_preview": _preview(data.get("prompt_text")),
+        "model": data.get("model") or actor.get("model") or extra.get("model"),
+        "prompt_preview": _preview(prompt),
+    }
+
+
+def _turn_completed(env: dict[str, Any]) -> dict[str, Any]:
+    data = env.get("data") or {}
+    actor = env.get("actor") or {}
+    payload = data.get("payload") if isinstance(data.get("payload"), dict) else {}
+    extra = payload.get("extra") if isinstance(payload.get("extra"), dict) else {}
+    index = _turn_index(data)
+    reply = _reply_text(data)
+    prompt = _prompt_text(data)
+    reply_length = data.get("reply_length")
+    if reply_length is None and isinstance(reply, str):
+        reply_length = len(reply)
+    return {
+        "title": f"Turn completed - {index}" if index is not None else "Turn completed",
+        "session_id": data.get("session_id") or data.get("thread_id"),
+        "turn_index": index,
+        "model": data.get("model") or actor.get("model") or extra.get("model"),
+        "status": _tool_status(data),
+        "delivered": data.get("delivered"),
+        "reply_length": reply_length,
+        "reply_preview": _preview(reply),
+        "prompt_preview": _preview(prompt),
+    }
+
+
+def _message_appended(env: dict[str, Any]) -> dict[str, Any]:
+    data = env.get("data") or {}
+    role = data.get("role") or "message"
+    dialog = _dialog_text(data) or _reply_text(data) or _prompt_text(data)
+    return {
+        "title": f"Message appended ({role})",
+        "role": role,
+        "session_id": data.get("session_id") or data.get("thread_id"),
+        "turn_index": _turn_index(data),
+        "message_preview": _preview(dialog),
+    }
+
+
+def _audio_dialog(env: dict[str, Any]) -> dict[str, Any]:
+    data = env.get("data") or {}
+    verb = _verb_from_type(env.get("type", ""))
+    reply = _reply_text(data)
+    transcript = _non_empty_str(data.get("transcript_text")) or _dialog_text(data)
+    return {
+        "title": f"Audio {verb}",
+        "session_id": data.get("session_id") or data.get("memo_id"),
+        "status": _tool_status(data),
+        "reply_preview": _preview(reply),
+        "transcript_preview": _preview(transcript),
+    }
+
+
+def _inbound_message(env: dict[str, Any]) -> dict[str, Any]:
+    data = env.get("data") or {}
+    sender = data.get("sender") or data.get("from_number") or data.get("channel")
+    msg = _dialog_text(data) or _prompt_text(data)
+    return {
+        "title": f"Message received - {sender}" if sender else "Message received",
+        "sender": sender,
+        "channel": data.get("channel") or data.get("platform"),
+        "message_preview": _preview(msg),
     }
 
 
@@ -206,6 +394,8 @@ def _tool_event(env: dict[str, Any]) -> dict[str, Any]:
 
 def _agent_event(env: dict[str, Any]) -> dict[str, Any]:
     data = env.get("data") or {}
+    prompt = _prompt_text(data)
+    reply = _reply_text(data)
     return {
         "title": f"Agent invocation - {_verb_from_type(env.get('type', ''))}",
         "agent": (
@@ -213,8 +403,10 @@ def _agent_event(env: dict[str, Any]) -> dict[str, Any]:
             or data.get("agent_name")
             or data.get("source_agent_id")
         ),
-        "status": data.get("status") or data.get("stop_reason"),
+        "status": data.get("status") or data.get("stop_reason") or _tool_status(data),
         "duration": _fmt_duration(data.get("duration_seconds")),
+        "prompt_preview": _preview(prompt),
+        "reply_preview": _preview(reply),
         "error": _preview(data.get("error") or data.get("error_message")),
         "invocation_id": data.get("invocation_id"),
     }
@@ -263,13 +455,23 @@ def _generic(env: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 # The one-line body a row shows after its headline, in priority order per
-# family. First key that yields something wins. `arguments` is last among the
-# tool keys because it is the noisiest and `input_preview` is already trimmed.
+# family. First key that yields something wins. Dialog keys (`reply_preview`,
+# `prompt_preview`, `message_preview`, `transcript_preview`) come ahead of
+# metadata so conversation turns and sessions always surface their actual
+# human/agent dialog rather than `working_directory`. `arguments` is last among
+# the tool keys because it is the noisiest and `input_preview` is already trimmed.
 _BODY_KEYS = (
+    "reply_preview",
+    "reply_text",
+    "prompt_preview",
+    "prompt_text",
+    "message_preview",
+    "transcript_preview",
+    "transcript_text",
+    "text",
     "input_preview",
     "command",
     "file_path",
-    "prompt_text",
     "ticket_title",
     "decision",
     "reasoning",
@@ -278,7 +480,6 @@ _BODY_KEYS = (
     "error",
     "error_message",
     "working_directory",
-    "title",
     "arguments",
 )
 
@@ -697,6 +898,16 @@ SUMMARIZERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "bloodbank.cli.session.started": _session_started,
     "bloodbank.cli.session.ended": _session_ended,
     "bloodbank.conversation.turn.started": _turn_started,
+    "bloodbank.conversation.turn.completed": _turn_completed,
+    "bloodbank.conversation.message.appended": _message_appended,
+    "bloodbank.audio.memo.received": _audio_dialog,
+    "bloodbank.audio.memo.transcribed": _audio_dialog,
+    "bloodbank.audio.memo.replied": _audio_dialog,
+    "bloodbank.audio.transcription.completed": _audio_dialog,
+    "bloodbank.messaging.message.received": _inbound_message,
+    "bloodbank.telephony.sms.received": _inbound_message,
+    "bloodbank.telephony.rcs.received": _inbound_message,
+    "bloodbank.telephony.mms.received": _inbound_message,
     "bloodbank.agent.tool.requested": _tool_event,
     "bloodbank.agent.tool.invoked": _tool_event,
     "bloodbank.agent.tool.completed": _tool_event,
@@ -723,3 +934,4 @@ SUMMARIZERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "bloodbank.project.activity.recorded": _project_activity,
     "bloodbank.reporting.report.completed": _report_completed,
 }
+
