@@ -1,5 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/delorenj/skillex/main/skills.schema.json",
   "inherit_global": true,
-  "skills": []
+  "skills": [
+    "g33-33god-integration"
+  ]
 }
