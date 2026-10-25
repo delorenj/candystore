@@ -140,13 +140,17 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    # Preserve the original console script's bare invocation. Container startup
-    # still uses python -m candystore.main and never enters the CLI parser.
-    if not argv or argv == ["serve"]:
+    command_parser = parser()
+    # Bare `candystore` prints help. It used to start the server, but the server
+    # runs in the platform container (python -m candystore.main, never this
+    # parser), so on the host a bare call only crashed against the wrong DB.
+    if not argv:
+        command_parser.print_help()
+        return 0
+    if argv == ["serve"]:
         from candystore.main import main as serve
 
         return serve()
-    command_parser = parser()
     args = command_parser.parse_args(argv)
     if not 1 <= args.sessions <= 10:
         command_parser.error("--sessions must be between 1 and 10")

@@ -472,7 +472,8 @@ def test_worktree_uses_main_checkout_and_submodule_stays_in_its_repo(monkeypatch
         assert cli.project_directory(str(tmp_path)) == expected
 
 
-def test_console_server_compatibility(monkeypatch):
+def test_console_server_compatibility(monkeypatch, capsys):
     monkeypatch.setattr("candystore.main.main", lambda: 17)
-    assert cli.main([]) == 17
     assert cli.main(["serve"]) == 17
+    assert cli.main([]) == 0
+    assert "context" in capsys.readouterr().out
