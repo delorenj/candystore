@@ -22,7 +22,7 @@ import pytest
 # finds out until they go looking for last month's sessions.
 #
 # The route to production is NOT only an unlucky `export`. candystore/db.py
-# defines DEFAULT_DATABASE_URL = "...localhost:5432/candystore" and
+# defines DEFAULT_DATABASE_URL = "...127.0.0.1:5434/candystore" (the live stack) and
 # database_url() returns `os.environ.get("DATABASE_URL", DEFAULT_DATABASE_URL)`,
 # so an UNSET DATABASE_URL aims the app at production. Deleting the variable
 # is not a safe state; it is the default one. Hence `_quarantine_database`
@@ -742,3 +742,33 @@ def sample_event() -> Callable[..., dict[str, Any]]:
         return copy.deepcopy(env)
 
     return make_event
+
+
+@pytest.fixture(autouse=True)
+def _no_ingest_placement(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ingest-time placement writes `project_dir_map`, which is reference data
+    this suite must not leave behind (see TRUNCATED_TABLES). Every test that
+    posts an event would otherwise add its directory to the developer's map.
+    Tests that exercise placement request `placement`, which re-enables it and
+    deletes exactly the directories it names."""
+    from candystore import ingest, projects
+
+    monkeypatch.setattr(ingest, "place_work_dir", lambda data: None)
+    monkeypatch.setattr(projects, "_placed_dirs", set())
+    monkeypatch.setattr(projects, "_projects_cache", None)
+
+
+@pytest.fixture
+def placement(project_map: None, monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[..., None]]:
+    """Real ingest-time placement, plus `forget(*work_dirs)` registration of the
+    directories a test expects it to create, which are removed afterwards."""
+    from candystore import ingest, projects
+    from candystore.db import cursor as db_cursor
+
+    monkeypatch.setattr(ingest, "place_work_dir", projects.place_work_dir)
+    created: list[str] = []
+    try:
+        yield created.extend
+    finally:
+        with db_cursor() as cur:
+            cur.execute("DELETE FROM project_dir_map WHERE work_dir = ANY(%s)", (created,))

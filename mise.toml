@@ -59,6 +59,17 @@ docker compose -f '{{config_root}}/../33god-platform/compose.yaml' exec -T candy
 description = "Resolve trail working directories to pjangler registry projects"
 run = "python -m candystore.projects"
 
+[tasks."project:sync:install"]
+description = "Install the hourly host timer that runs project:sync"
+run = """
+mkdir -p ~/.config/systemd/user
+ln -sf '{{config_root}}/ops/systemd/candystore-project-sync.service' '{{config_root}}/ops/systemd/candystore-project-sync.timer' ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now candystore-project-sync.timer
+systemctl --user start candystore-project-sync.service
+systemctl --user --no-pager status candystore-project-sync.service | tail -5
+"""
+
 [tasks."build:ui"]
 description = "Build React SPA into static/"
 run = "cd web && npm run build"

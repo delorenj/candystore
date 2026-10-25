@@ -7,6 +7,7 @@ from typing import Any
 
 from candystore import stats
 from candystore.db import insert_event, record_dead_letter, sanitize_envelope
+from candystore.projects import place_work_dir
 
 logger = logging.getLogger("candystore.ingest")
 
@@ -66,5 +67,12 @@ def handle_event(body: bytes, topic: str | None = None) -> dict[str, Any]:
             "stripped NUL before insert: event %s topic=%s", clean.get("id"), topic
         )
         record_dead_letter(body, reason="nul-sanitized", topic=topic, event_id=clean.get("id"))
+    if inserted:
+        try:
+            place_work_dir(clean.get("data"))
+        except Exception:
+            # The event is already committed. A failed placement must not turn
+            # into a 500 RETRY; the next host project:sync fills the gap.
+            logger.exception("project_dir_map placement failed: event %s", clean.get("id"))
     stats.incr("inserted" if inserted else "duplicate")
     return {"status": "SUCCESS", "inserted": inserted}

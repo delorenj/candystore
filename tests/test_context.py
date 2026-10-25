@@ -10,7 +10,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from candystore import cli
+from candystore import cli, ingest
 from candystore.context import ContextError, latest_context, since_time
 from candystore.db import insert_event
 from candystore.handoff import render_context, summarize_session, text
@@ -477,3 +477,21 @@ def test_console_server_compatibility(monkeypatch, capsys):
     assert cli.main(["serve"]) == 17
     assert cli.main([]) == 0
     assert "context" in capsys.readouterr().out
+
+
+def test_a_session_in_an_unsynced_directory_is_found(db, placement, sample_event):
+    """Real producers rarely set data.project (0.17% of rows); the directory is
+    the signal. A worktree first seen after the last host project:sync used to
+    be invisible to `context latest` until someone re-ran it by hand."""
+    worktree = "/home/delorenj/code/33GOD/candystore/.worktrees/feat-unsynced"
+    placement([worktree])
+    envelope = sample_event(
+        correlationid="00000000-0000-4000-8000-0000000000aa",
+        time="2026-09-29T12:10:00Z",
+        type="bloodbank.conversation.turn.started",
+        data={"project": None, "working_directory": worktree, "prompt_text": "unsynced work"},
+    )
+    ingest.handle_event(json.dumps(envelope).encode("utf-8"))
+
+    context = latest_context(project="candystore", now=NOW)
+    assert [s["session_id"] for s in context["sessions"]] == [envelope["correlationid"]]

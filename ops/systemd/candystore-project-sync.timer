@@ -1,0 +1,16 @@
+# Canonical copy: candystore/ops/systemd/ (symlinked into ~/.config/systemd/user/).
+[Unit]
+Description=Run CandyStore project:sync hourly
+
+[Timer]
+# New directories are placed at ingest; this picks up newly registered pjangler
+# projects, re-resolves directories they claim, and refreshes alias rows. A
+# full run takes ~4s.
+OnBootSec=3min
+OnActiveSec=3min
+OnUnitActiveSec=1h
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

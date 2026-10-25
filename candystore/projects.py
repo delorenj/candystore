@@ -19,6 +19,8 @@ import json
 import logging
 import shutil
 import subprocess
+import threading
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -315,6 +317,68 @@ def sync(projects: list[Project] | None = None) -> dict[str, int]:
     }
     logger.info("project:sync %s", counts)
     return counts
+
+
+# Ingest-time placement. `sync()` needs pjangler, which lives on the host, so it
+# can only run from there -- and nothing ran it between 2026-10-06 and
+# 2026-10-25. Every directory first seen in that window was missing from the
+# map: 171,350 events across 478 directories, and `candystore context latest`
+# reported "no prior sessions" for this very repo while agents worked in it.
+# The `projects` table is already in Postgres, so the app can place a new
+# directory itself the moment it first appears. sync() stays the authority: it
+# still re-resolves everything, picks up newly registered projects, and
+# refreshes `seen`.
+_PROJECTS_TTL_SECONDS = 60.0
+_placement_lock = threading.Lock()
+_placed_dirs: set[str] = set()
+_projects_cache: tuple[float, list[Project]] | None = None
+
+
+def event_work_dir(data: Any) -> str | None:
+    """WORK_DIR_EXPR, in Python. The map key must be the exact string the SQL
+    filters derive, so this mirrors it rather than normalizing."""
+    if not isinstance(data, dict):
+        return None
+    work_dir = data.get("working_directory")
+    if not (isinstance(work_dir, str) and work_dir):
+        payload = data.get("payload")
+        work_dir = payload.get("cwd") if isinstance(payload, dict) else None
+    return work_dir if isinstance(work_dir, str) and work_dir else None
+
+
+def _registered_projects(cur) -> list[Project]:
+    global _projects_cache
+    now = time.monotonic()
+    cached = _projects_cache
+    if cached is not None and now - cached[0] < _PROJECTS_TTL_SECONDS:
+        return cached[1]
+    cur.execute("SELECT slug, name, repo_path, ticket_prefix FROM projects")
+    projects = [Project(*row) for row in cur.fetchall()]
+    _projects_cache = (now, projects)
+    return projects
+
+
+def place_work_dir(data: Any) -> None:
+    """Add an event's directory to `project_dir_map` if it is not there yet.
+
+    Never overwrites a row: an existing mapping came from sync(), which saw the
+    live registry. An unresolved directory is recorded too (slug NULL), exactly
+    as sync() would, so the map stays a complete inventory of the trail.
+    """
+    work_dir = event_work_dir(data)
+    if work_dir is None or work_dir in _placed_dirs:
+        return
+    with _placement_lock:
+        if work_dir in _placed_dirs:
+            return
+        with cursor() as cur:
+            slug, rule = resolve(work_dir, _registered_projects(cur))
+            cur.execute(
+                "INSERT INTO project_dir_map (work_dir, slug, rule, seen, resolved_at) "
+                "VALUES (%s, %s, %s, 1, NOW()) ON CONFLICT (work_dir) DO NOTHING",
+                (work_dir, slug, rule),
+            )
+        _placed_dirs.add(work_dir)
 
 
 def main() -> int:

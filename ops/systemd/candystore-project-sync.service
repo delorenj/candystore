@@ -1,0 +1,15 @@
+# Canonical copy: candystore/ops/systemd/ (symlinked into ~/.config/systemd/user/
+# by `mise run project:sync:install`).
+[Unit]
+Description=CandyStore project:sync (pjangler registry -> projects, project_alias, project_dir_map)
+Documentation=file:%h/code/33GOD/candystore/README.md
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/code/33GOD/candystore
+# pjangler is a mise shim, and mise is not on a systemd user unit's PATH.
+Environment=PATH=%h/.local/share/mise/shims:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/code/33GOD/candystore/.venv/bin/python -m candystore.projects
+TimeoutStartSec=5min
+Nice=10

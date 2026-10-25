@@ -62,3 +62,25 @@ def test_handle_event_reports_idempotent_success(monkeypatch, sample_event):
 
     assert result == {"status": "SUCCESS", "inserted": False}
     assert len(calls) == 1
+
+
+def test_only_a_new_row_is_placed_and_placement_cannot_fail_ingest(monkeypatch, sample_event):
+    placed = []
+    monkeypatch.setattr(ingest, "insert_event", lambda envelope, sanitized=False: True)
+    monkeypatch.setattr(ingest, "place_work_dir", placed.append)
+    ingest.handle_event(json.dumps(sample_event()).encode("utf-8"))
+    assert [d["working_directory"] for d in placed] == ["/home/delorenj/code/33GOD/candystore"]
+
+    monkeypatch.setattr(ingest, "insert_event", lambda envelope, sanitized=False: False)
+    ingest.handle_event(json.dumps(sample_event()).encode("utf-8"))
+    assert len(placed) == 1
+
+    def boom(data):
+        raise RuntimeError("map unavailable")
+
+    # The event is committed before placement runs; a 500 here would make
+    # Dapr redeliver an event that is already stored.
+    monkeypatch.setattr(ingest, "insert_event", lambda envelope, sanitized=False: True)
+    monkeypatch.setattr(ingest, "place_work_dir", boom)
+    result = ingest.handle_event(json.dumps(sample_event()).encode("utf-8"))
+    assert result == {"status": "SUCCESS", "inserted": True}

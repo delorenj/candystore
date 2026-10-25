@@ -10,7 +10,14 @@ from __future__ import annotations
 
 import pytest
 
-from candystore.projects import Project, RegistryError, parse_registry, resolve
+from candystore.projects import (
+    Project,
+    RegistryError,
+    event_work_dir,
+    parse_registry,
+    place_work_dir,
+    resolve,
+)
 
 # The registry as `pjangler list --json` actually returns it, trimmed to
 # the projects these rules turn on. Note `bb`: the slug is not the directory
@@ -199,3 +206,59 @@ def test_dir_name_reads_the_last_path_segment():
     )
     assert project.dir_name == "bloodbank"
     assert project.slug != project.dir_name
+
+
+@pytest.mark.parametrize(
+    ("data", "expected"),
+    [
+        ({"working_directory": "/a"}, "/a"),
+        # codex nests its hook payload one level deeper.
+        ({"payload": {"cwd": "/b"}}, "/b"),
+        # NULLIF(.., '') in WORK_DIR_EXPR: empty falls through to payload.cwd.
+        ({"working_directory": "", "payload": {"cwd": "/c"}}, "/c"),
+        # The key is the exact string the SQL derives; no normalizing.
+        ({"working_directory": "/d/"}, "/d/"),
+        ({"payload": "not-a-dict"}, None),
+        ({}, None),
+        (None, None),
+        ("text", None),
+    ],
+)
+def test_event_work_dir_mirrors_the_sql_expression(data, expected):
+    assert event_work_dir(data) == expected
+
+
+def _map_row(work_dir):
+    from candystore.db import cursor
+
+    with cursor() as cur:
+        cur.execute("SELECT slug, rule FROM project_dir_map WHERE work_dir = %s", (work_dir,))
+        return cur.fetchone()
+
+
+def test_a_new_directory_is_placed_at_ingest(db, placement):
+    """The map is a projection the host refreshes by hand. Between 2026-10-06
+    and 2026-10-25 nothing refreshed it and every new directory -- a fresh
+    worktree included -- fell out of every project filter."""
+    worktree = "/home/delorenj/code/33GOD/candystore/.worktrees/feat-x"
+    stray = "/home/delorenj/code/not-registered"
+    placement([worktree, stray])
+
+    place_work_dir({"working_directory": worktree})
+    place_work_dir({"payload": {"cwd": stray}})
+
+    assert _map_row(worktree) == ("candystore", "repo-subpath")
+    # Recorded as unresolved, as sync() would, rather than skipped.
+    assert _map_row(stray) == (None, "unresolved")
+
+
+def test_placement_never_overwrites_a_synced_row(db, placement):
+    # project_map seeds this as unresolved; the registry would now say nothing
+    # different, but sync() saw the live registry and placement must defer.
+    place_work_dir({"working_directory": "/tmp/hermes-board-cranker-50"})
+    place_work_dir({"working_directory": "/home/delorenj/code/james-brennan-jimb169"})
+    assert _map_row("/tmp/hermes-board-cranker-50") == (None, "unresolved")
+    assert _map_row("/home/delorenj/code/james-brennan-jimb169") == (
+        "james-brennan",
+        "sibling-worktree",
+    )

@@ -8,8 +8,7 @@ query and summary APIs, and serves a React UI from the same Python process.
 
 ```bash
 pip install -e '.[dev]'
-DATABASE_URL=postgresql://candystore:candystore@localhost:5432/candystore \
-  python -m candystore.main
+python -m candystore.main  # DATABASE_URL defaults to the stack's 127.0.0.1:5434
 ```
 
 The server listens on `APP_PORT` or `3001`.
@@ -21,6 +20,16 @@ project. It returns a handoff from the last three sessions across agent CLIs,
 excluding the current session when its ID is available. Use `--project`,
 `--since`, and `--json` for explicit scope or structured evidence.
 See [the context and startup-hook guide](docs/context-handoff.md).
+
+## Project Placement
+
+Events record a working directory, not a project. `project_dir_map` maps one
+to the other, and every project filter (`context latest`, the feed, heat maps)
+reads it. The app places a directory the first time it sees one, resolved
+against the `projects` table. That table is a projection of the pjangler
+registry, which only the host can read, so a newly registered project appears
+after the next `mise run project:sync`. `mise run project:sync:install` adds an
+hourly user timer that runs it.
 
 ## API
 

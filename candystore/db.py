@@ -14,7 +14,11 @@ from psycopg2.extras import Json
 
 logger = logging.getLogger("candystore.db")
 
-DEFAULT_DATABASE_URL = "postgresql://candystore:candystore@localhost:5432/candystore"
+# The deployed stack publishes its Postgres on 127.0.0.1:5434 (compose.yml and
+# the platform compose). 5432 is another server on this host, so the old
+# localhost:5432 default failed auth for every bare host-side run, including
+# `mise run project:sync`.
+DEFAULT_DATABASE_URL = "postgresql://candystore:candystore@127.0.0.1:5434/candystore"
 
 REQUIRED_ENVELOPE_FIELDS = (
     "id",
