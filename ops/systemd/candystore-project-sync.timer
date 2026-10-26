@@ -1,4 +1,6 @@
 # Canonical copy: candystore/ops/systemd/ (symlinked into ~/.config/systemd/user/).
+# RETIRED 2026-10-26: scheduling moved to candybar (33GOD/candybar deploy/migration/ledger.yaml,
+# id systemd:candystore-project-sync.timer). Kept for rollback only — never enable this timer.
 [Unit]
 Description=Run CandyStore project:sync hourly
 

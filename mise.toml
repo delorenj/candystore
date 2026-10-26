@@ -60,12 +60,14 @@ description = "Resolve trail working directories to pjangler registry projects"
 run = "python -m candystore.projects"
 
 [tasks."project:sync:install"]
-description = "Install the hourly host timer that runs project:sync"
+description = "Install the project:sync units (scheduling is owned by candybar; the .timer is retired)"
 run = """
 mkdir -p ~/.config/systemd/user
 ln -sf '{{config_root}}/ops/systemd/candystore-project-sync.service' '{{config_root}}/ops/systemd/candystore-project-sync.timer' ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now candystore-project-sync.timer
+if systemctl --user is-enabled candystore-project-sync.timer >/dev/null 2>&1; then
+  echo 'WARNING: candystore-project-sync.timer is retired — disable it: systemctl --user disable --now candystore-project-sync.timer' >&2
+fi
 systemctl --user start candystore-project-sync.service
 systemctl --user --no-pager status candystore-project-sync.service | tail -5
 """
