@@ -13,6 +13,20 @@ python -m candystore.main  # DATABASE_URL defaults to the stack's 127.0.0.1:5434
 
 The server listens on `APP_PORT` or `3001`.
 
+## Port contract
+
+`8683` is the canonical Candystore API/UI port on **every peer**, bound to
+loopback only (`127.0.0.1:8683`, `compose.yml` maps it to the container's
+`3001`). Each machine runs its own Candystore at that address; stores are never
+federated or copied between machines. Consumers resolve the base URL as
+`$CANDYSTORE_URL`, then `http://127.0.0.1:8683` (a blank value falls back), so
+one default is correct everywhere and an override covers a non-default install
+(a restore probe, the legacy bloodbank `candystore` profile on `3603`). The
+other host ports are part of the same contract: Postgres `5434`, Dapr HTTP
+`3504`. `CANDYSTORE_PORT`, `CANDYSTORE_POSTGRES_PORT` and
+`CANDYSTORE_DAPR_HTTP_PORT` exist for one-off side-by-side runs; changing a
+default is a cross-repo contract change. `tests/test_port_contract.py` guards it.
+
 ## Recover Session Context
 
 Run `mise run cli:install`, then `candystore context latest` in any registered

@@ -133,7 +133,11 @@ def parser() -> argparse.ArgumentParser:
     latest.add_argument(
         "--json", action="store_true", help="structured evidence instead of Markdown"
     )
-    latest.add_argument("--base-url", default=os.environ.get("CANDYSTORE_URL", DEFAULT_URL))
+    latest.add_argument(
+        "--base-url",
+        default=os.environ.get("CANDYSTORE_URL") or DEFAULT_URL,
+        help="Candystore API base; defaults to $CANDYSTORE_URL, then the 8683 port contract",
+    )
     latest.add_argument("--timeout", type=float, default=5, help="HTTP deadline in seconds")
     return root
 

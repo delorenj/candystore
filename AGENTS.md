@@ -47,7 +47,9 @@ so the Dapr sidecar can reach it over `candystore-internal`; `main.py` defaults
 through an authenticating reverse proxy (Traefik + Cloudflare Access).
 
 `compose.yml` is the deployment entry point (app on 127.0.0.1:8683, postgres on
-127.0.0.1:5434, dapr HTTP on 127.0.0.1:3504). It joins the external
+127.0.0.1:5434, dapr HTTP on 127.0.0.1:3504). These ports are the cross-peer
+contract (README "Port contract"): clients resolve `$CANDYSTORE_URL`, then
+`http://127.0.0.1:8683`. It joins the external
 `bloodbank-network` for NATS/placement. Never run it alongside the legacy
 `candystore` profile in `bloodbank/compose/docker-compose.yml` — both
 sidecars share the JetStream durable `candystore-events` and would split
