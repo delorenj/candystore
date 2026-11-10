@@ -1,7 +1,7 @@
 {
   "project_name": "Candystore",
   "project_description": "Bloodbank durable event audit trail",
-  "repo_path": "/home/delorenj/code/33GOD/candystore",
+  "repo_path": "~/code/33GOD/candystore",
   "ticket_provider": {
     "type": "plane",
     "state": "linked",
