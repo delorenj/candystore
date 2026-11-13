@@ -1,0 +1,35 @@
+[
+  {
+    "sample": "nested_prompt",
+    "event_id": "5277b649-d349-45d5-80ca-ab7d0ad1a52e",
+    "term_sha256": "93e9f44a49f7a6c5239935dbacfbba420039e7334ad5846be7c8c9a6176593cc",
+    "term_in_original_text": true,
+    "term_in_search_index": false,
+    "control_event_returned": true,
+    "event_returned_by_search": false,
+    "matching_events": 0,
+    "text_chars": 2426
+  },
+  {
+    "sample": "recent_prompt",
+    "event_id": "7179974f-3362-4486-9139-93a637fa5bc8",
+    "term_sha256": "82a3537ff0dbce7eec35d69edc3a189ee6f17d82f353a553f9aa96cb0be3ce89",
+    "term_in_original_text": true,
+    "term_in_search_index": false,
+    "control_event_returned": true,
+    "event_returned_by_search": false,
+    "matching_events": 0,
+    "text_chars": 7252
+  },
+  {
+    "sample": "reply",
+    "event_id": "e53cc024-b8cc-4081-a661-691b62fa1f58",
+    "term_sha256": "5a5d95f87652289b18e6529ad2b0d4359f4563477de9a843441e9228c72ea812",
+    "term_in_original_text": true,
+    "term_in_search_index": false,
+    "control_event_returned": true,
+    "event_returned_by_search": false,
+    "matching_events": 0,
+    "text_chars": 5278
+  }
+]

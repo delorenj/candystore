@@ -1,0 +1,16 @@
+{"cli":"hermes","tool_sessions":2755,"tool_sessions_with_prompt":2707,"tool_sessions_with_reply":2425}
+{"cli":"opencode","tool_sessions":702,"tool_sessions_with_prompt":696,"tool_sessions_with_reply":119}
+{"cli":"claude","tool_sessions":668,"tool_sessions_with_prompt":665,"tool_sessions_with_reply":485}
+{"cli":"antigravity","tool_sessions":173,"tool_sessions_with_prompt":0,"tool_sessions_with_reply":0}
+{"cli":"codex","tool_sessions":153,"tool_sessions_with_prompt":151,"tool_sessions_with_reply":78}
+{"cli":"gemini","tool_sessions":1,"tool_sessions_with_prompt":0,"tool_sessions_with_reply":0}
+{"cli":"copilot","tool_sessions":1,"tool_sessions_with_prompt":0,"tool_sessions_with_reply":0}
+{"cli":"kimi","tool_sessions":1,"tool_sessions_with_prompt":0,"tool_sessions_with_reply":0}
+{"cli":"bb-emit","tool_sessions":0,"tool_sessions_with_prompt":0,"tool_sessions_with_reply":0}
+{"cli":null,"tool_sessions":0,"tool_sessions_with_prompt":0,"tool_sessions_with_reply":0}
+{"service":"claude-code","starts":8382,"direct_prompt":8382,"nested_prompt":0}
+{"service":"hermes-hooks","starts":3095,"direct_prompt":2663,"nested_prompt":3068}
+{"service":"opencode-hooks","starts":1545,"direct_prompt":1545,"nested_prompt":0}
+{"service":"bloodbank-hermes-gateway","starts":1470,"direct_prompt":1153,"nested_prompt":0}
+{"service":"codex-hooks","starts":583,"direct_prompt":583,"nested_prompt":0}
+{"service":"kimi-hooks","starts":3,"direct_prompt":3,"nested_prompt":0}

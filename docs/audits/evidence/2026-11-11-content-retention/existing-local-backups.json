@@ -1,0 +1,52 @@
+[
+  {
+    "file": "candystore-postgres.candystore_20261001.dump",
+    "bytes": 1363980913,
+    "modified": "2026-10-01T11:42:59.134294+00:00"
+  },
+  {
+    "file": "candystore-postgres.candystore_20261101.dump",
+    "bytes": 1807791883,
+    "modified": "2026-11-01T12:38:39.705727+00:00"
+  },
+  {
+    "file": "candystore-postgres.candystore_20261104.dump",
+    "bytes": 2064370608,
+    "modified": "2026-11-04T12:37:48.418063+00:00"
+  },
+  {
+    "file": "candystore-postgres.candystore_20261105.dump",
+    "bytes": 2155645549,
+    "modified": "2026-11-05T12:41:11.862535+00:00"
+  },
+  {
+    "file": "candystore-postgres.candystore_20261106.dump",
+    "bytes": 2265419764,
+    "modified": "2026-11-06T12:41:14.482397+00:00"
+  },
+  {
+    "file": "candystore-postgres.candystore_20261107.dump",
+    "bytes": 2351312748,
+    "modified": "2026-11-07T12:39:15.238029+00:00"
+  },
+  {
+    "file": "candystore-postgres.candystore_20261108.dump",
+    "bytes": 2487428710,
+    "modified": "2026-11-08T12:39:54.089345+00:00"
+  },
+  {
+    "file": "candystore-postgres.candystore_20261109.dump",
+    "bytes": 2545812955,
+    "modified": "2026-11-09T12:41:30.827067+00:00"
+  },
+  {
+    "file": "candystore-postgres.candystore_20261110.dump",
+    "bytes": 2620739970,
+    "modified": "2026-11-10T12:40:16.116305+00:00"
+  },
+  {
+    "file": "candystore-postgres.candystore_20261111.dump",
+    "bytes": 2712791494,
+    "modified": "2026-11-11T12:37:12.351826+00:00"
+  }
+]

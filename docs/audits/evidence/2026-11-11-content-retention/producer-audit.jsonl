@@ -1,0 +1,14 @@
+{"type":"com.dapr.event.sent","n":8483}
+{"type":"bloodbank.repo.decision.recorded","n":20}
+{"type":"bloodbank.evt.agent.tool.completed","n":4}
+{"type":"bloodbank.evt.agent.session.ended","n":4}
+{"type":"bloodbank.messaging.rcs.received","n":2}
+{"type":"bloodbank.audio.memo.voiced","n":1}
+{"service":"claude-code","n":832574,"with_turn":0,"with_native":0,"with_invocation":832574}
+{"service":"hermes-hooks","n":231219,"with_turn":0,"with_native":0,"with_invocation":231219}
+{"service":"opencode-hooks","n":107523,"with_turn":0,"with_native":0,"with_invocation":107523}
+{"service":"codex-hooks","n":28502,"with_turn":0,"with_native":0,"with_invocation":28502}
+{"service":"antigravity-hooks","n":5860,"with_turn":0,"with_native":0,"with_invocation":5860}
+{"service":"gemini-hooks","n":1,"with_turn":0,"with_native":0,"with_invocation":1}
+{"service":"kimi-hooks","n":1,"with_turn":0,"with_native":0,"with_invocation":1}
+{"service":"copilot-hooks","n":1,"with_turn":0,"with_native":0,"with_invocation":1}

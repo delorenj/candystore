@@ -1,0 +1,62 @@
+[
+  {
+    "sample": "nested_prompt",
+    "id": "5277b649-d349-45d5-80ca-ab7d0ad1a52e",
+    "raw_type": "dict",
+    "raw_data_matches": true,
+    "summary_keys": [
+      "summary",
+      "raw"
+    ],
+    "prompt_preview_present": true,
+    "reply_preview_present": false
+  },
+  {
+    "sample": "missing_prompt",
+    "id": "3d858edf-2c1d-534b-b9e7-a0e11de8e9bc",
+    "raw_type": "dict",
+    "raw_data_matches": true,
+    "summary_keys": [
+      "summary",
+      "raw"
+    ],
+    "prompt_preview_present": false,
+    "reply_preview_present": false
+  },
+  {
+    "sample": "recent_prompt",
+    "id": "7179974f-3362-4486-9139-93a637fa5bc8",
+    "raw_type": "dict",
+    "raw_data_matches": true,
+    "summary_keys": [
+      "summary",
+      "raw"
+    ],
+    "prompt_preview_present": true,
+    "reply_preview_present": false
+  },
+  {
+    "sample": "missing_reply",
+    "id": "8b9eaecc-a38b-518a-bf87-56d10f3de0ab",
+    "raw_type": "dict",
+    "raw_data_matches": true,
+    "summary_keys": [
+      "summary",
+      "raw"
+    ],
+    "prompt_preview_present": false,
+    "reply_preview_present": false
+  },
+  {
+    "sample": "reply",
+    "id": "e53cc024-b8cc-4081-a661-691b62fa1f58",
+    "raw_type": "dict",
+    "raw_data_matches": true,
+    "summary_keys": [
+      "summary",
+      "raw"
+    ],
+    "prompt_preview_present": false,
+    "reply_preview_present": true
+  }
+]

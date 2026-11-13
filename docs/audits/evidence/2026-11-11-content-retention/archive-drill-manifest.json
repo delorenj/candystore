@@ -1,0 +1,46 @@
+{
+  "format": "candystore-audit-drill-jsonl-v1",
+  "scope": "BOUNDED SAMPLE ONLY; not production backup, not production archiver",
+  "export_started_at": "2026-11-12T01:41:07.109761+00:00",
+  "export_finished_at": "2026-11-12T01:41:26.213188+00:00",
+  "source_database": "candystore-postgres/candystore",
+  "source_access": "REPEATABLE READ READ ONLY",
+  "archive_path": "/home/delorenj/.hermes/profiles/candystore-pm/cache/scratch/candystore-archive-drill-v2/sample-10ea83a5c11cb581712d.jsonl.zst",
+  "row_counts": {
+    "dead_letter": 69,
+    "event_embeddings": 1684,
+    "events": 16632
+  },
+  "source_id_set_sha256": "463dddd00ade29f5abb5deb42291fdc4b54506e95c43b4cfa0d898ad3d36d5cb",
+  "event_time_min": "2026-10-01T00:28:05+00:00",
+  "event_time_max": "2026-11-12T01:40:01.662+00:00",
+  "received_at_min": "2026-10-03T10:36:47.654024+00:00",
+  "received_at_max": "2026-11-12T01:40:01.669944+00:00",
+  "canonical_records_sha256": "2d4517e180b2c1a37c26ecdb88c7d20cd1f55f3803dfb9b43c34f17b9accbd29",
+  "source_file_sha256": "120b120423af1adf69cf0200bc2b44e1e8026012762e18c9dd8be34f3dc4b562",
+  "compressed_sha256": "10ea83a5c11cb581712dd905972580788afff1468f609365498d86e080a460ba",
+  "schema_sha256": "4e0179895cc017283c5ef4a98108e47073a1607b7b0bca5befd053eebeb7d590",
+  "uncompressed_bytes": 158361521,
+  "zstd3_bytes": 14802284,
+  "gzip6_bytes": 20180275,
+  "compression_seconds": 0.083,
+  "restore_and_repeat_seconds": 8.711,
+  "inserted": {
+    "events": 16632,
+    "event_embeddings": 1684,
+    "dead_letter": 69
+  },
+  "second_import_inserted": {
+    "events": 0,
+    "event_embeddings": 0,
+    "dead_letter": 0
+  },
+  "all_fields_equal": true,
+  "decompression_byte_equal": true,
+  "corruption_rejected": true,
+  "production_deleted_rows": 0,
+  "production_schema_changed": false,
+  "local_postgres_version": "17; source version 16.15; cross-version logical restore sample",
+  "sanitized_events": 19,
+  "caveat": "No remote upload/readback, encryption, full-corpus restore, crash/resume or live purge tested. Matching duplicate IDs only; conflicting same-ID payloads must be rejected in production."
+}
