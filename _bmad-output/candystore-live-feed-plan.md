@@ -4,6 +4,8 @@
 **Board:** Plane `CANDYS` (`82e56896-e7fd-466b-826c-1019441c64ca`) — epics **E8–E14**, tickets **CANDYS-32…68**
 **Supersedes nothing.** Extends `candystore-deep-dive-plan.md` (epics E1–E7, CANDYS-2…31).
 
+> **Current requirements correction (CANDYS-71, 2026-11-14):** The proposed high-level `cs today` agent experience, daily-turn semantics and E13 scope reconciliation live in [the scoped PRD](planning-artifacts/prds/prd-Candystore-2026-11-14/prd.md). This September plan remains historical evidence; its E13 ticket/status snapshot and old CLI assumptions are not current implementation facts.
+
 ## The ask
 
 > "This app in its current form is not as useful as it could be." — real-time updates; an intuitive way
