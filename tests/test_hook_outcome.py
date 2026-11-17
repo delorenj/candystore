@@ -105,9 +105,20 @@ def test_timeout_and_connection_are_failures(monkeypatch, capsys):
 
 
 @pytest.mark.parametrize("history", [False, True])
-def test_real_cli_rejects_missing_window_from_http_200(history):
-    payload = {"schema_version": 1, "project": "candystore", "sessions": [],
+@pytest.mark.parametrize("schema_version,include_window", [
+    (1, False),  # Existing missing-window regression.
+    (True, True),
+    (1.0, True),
+    (0, True),
+    (2, True),
+    ("1", True),
+    (None, True),
+])
+def test_real_cli_rejects_unsupported_http_200_context(schema_version, include_window, history):
+    payload = {"schema_version": schema_version, "project": "candystore", "sessions": [],
                "decisions": [{"text": "decision", "event_id": "event-1"}] if history else []}
+    if include_window:
+        payload.update(since="2026-10-18", as_of="2026-11-17")
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):

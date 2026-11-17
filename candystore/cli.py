@@ -129,7 +129,9 @@ def fetch_context(
         result = json.loads(body)
     except (ValueError, UnicodeDecodeError) as exc:
         raise ClientError("CandyStore returned invalid JSON") from exc
-    if not isinstance(result, dict) or result.get("schema_version") != 1:
+    if (not isinstance(result, dict)
+            or type(result.get("schema_version")) is not int
+            or result["schema_version"] != 1):
         raise ClientError("CandyStore returned an unsupported context response")
     return result
 
