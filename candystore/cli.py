@@ -30,6 +30,25 @@ class ClientError(RuntimeError):
     pass
 
 
+class NoProjectError(ClientError):
+    """The API's existing cwd resolver found no registered project."""
+
+
+def hook_outcome(response: dict) -> dict:
+    """Private startup contract; fail closed on responses that cannot prove emptiness."""
+    if (not isinstance(response.get("project"), str) or not response["project"]
+            or not isinstance(response.get("sessions"), list)
+            or not isinstance(response.get("decisions"), list)):
+        raise ClientError("CandyStore returned an unsupported context response")
+    if not response["sessions"] and not response["decisions"]:
+        return {"status": "skipped", "reason": "no_history"}
+    try:
+        context = render_context(response)
+    except (KeyError, TypeError, AttributeError, ValueError) as exc:
+        raise ClientError("CandyStore returned an unsupported context response") from exc
+    return {"status": "succeeded", "context": context}
+
+
 def project_directory(cwd: str) -> str:
     """Use a worktree's main checkout, retaining submodule repository identity."""
     path = str(Path(cwd).expanduser().resolve())
@@ -95,6 +114,9 @@ def fetch_context(
                 error = json.loads(exc.read(4096)).get("error", "invalid context request")
             except (ValueError, AttributeError):
                 error = "invalid context request"
+            if (not project and error ==
+                    "working directory is not a registered project; specify --project"):
+                raise NoProjectError(str(error)) from exc
             raise ClientError(str(error)) from exc
         raise ClientError(f"CandyStore returned HTTP {exc.code}") from exc
     except (URLError, OSError, TimeoutError) as exc:
@@ -134,6 +156,9 @@ def parser() -> argparse.ArgumentParser:
         "--json", action="store_true", help="structured evidence instead of Markdown"
     )
     latest.add_argument(
+        "--hook-outcome", action="store_true", help=argparse.SUPPRESS
+    )
+    latest.add_argument(
         "--base-url",
         default=os.environ.get("CANDYSTORE_URL") or DEFAULT_URL,
         help="Candystore API base; defaults to $CANDYSTORE_URL, then the 8683 port contract",
@@ -170,9 +195,22 @@ def main(argv: list[str] | None = None) -> int:
             exclude_session=args.exclude_session,
             timeout=args.timeout,
         )
+    except NoProjectError as exc:
+        if args.hook_outcome:
+            print(json.dumps({"status": "skipped", "reason": "no_project"}))
+            return 0
+        print(f"candystore: {exc}", file=sys.stderr)
+        return 1
     except ClientError as exc:
         print(f"candystore: {exc}", file=sys.stderr)
         return 1
+    if args.hook_outcome:
+        try:
+            print(json.dumps(hook_outcome(response), ensure_ascii=False))
+        except ClientError as exc:
+            print(f"candystore: {exc}", file=sys.stderr)
+            return 1
+        return 0
     print(json.dumps(response, ensure_ascii=False) if args.json else render_context(response))
     return 0
 
