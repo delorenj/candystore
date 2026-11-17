@@ -37,6 +37,8 @@ class NoProjectError(ClientError):
 def hook_outcome(response: dict) -> dict:
     """Private startup contract; fail closed on responses that cannot prove emptiness."""
     if (not isinstance(response.get("project"), str) or not response["project"]
+            or any(not isinstance(response.get(key), str) or not response[key]
+                   for key in ("since", "as_of"))
             or not isinstance(response.get("sessions"), list)
             or not isinstance(response.get("decisions"), list)):
         raise ClientError("CandyStore returned an unsupported context response")
