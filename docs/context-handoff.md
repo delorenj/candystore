@@ -71,10 +71,17 @@ Gemini, Kimi, Copilot, Hermes, and OpenCode use their session-start boundary;
 Antigravity uses its first `PreInvocation`. OpenClaw has no deployed startup
 binding and is outside the installed coverage.
 
-The handler has a bounded deadline. Missing CLI installation, unavailable
-CandyStore, an unknown project, or a timeout records a failed/skipped handler
-and leaves the agent able to start. Set `CANDYSTORE_CONTEXT=0` to skip it, or
-disable `candystore-context` through the existing project hook controls.
+The handler has a bounded deadline. An unregistered cwd is a `no_project`
+skip; a registered project with neither eligible sessions nor decisions after
+its existing filters is a distinct `no_history` skip. Both return exit 0 and
+inject no context. Missing CLI installation and existing opt-outs keep their
+own skip reasons. An unavailable CandyStore, timeout, invalid request, malformed
+response, or server failure is a genuine nonzero failure without partial
+context. The startup-only `--hook-outcome` CLI mode carries this classification
+as JSON from the existing resolver and query to the shared Bloodbank handler;
+manual `context latest` keeps its ordinary output and unknown-project error.
+Set `CANDYSTORE_CONTEXT=0` to skip it, or disable `candystore-context` through
+the existing project hook controls.
 
 ```bash
 CANDYSTORE_CONTEXT=0 codex
@@ -108,3 +115,25 @@ alongside it. The shared hook hub reloads the handler registry automatically.
 
 Run database tests only against a disposable database using
 `CANDYSTORE_TEST_DATABASE_URL`; the suite truncates its test audit tables.
+
+### Post-deploy verification (not yet performed)
+
+After both the CandyStore CLI and Bloodbank handler are installed, record their
+revision IDs and the symlink targets (`readlink -f ~/.local/bin/candystore` and
+`readlink -f ~/.agents/hooks/hub/concerns.py`). Do not count a 24-hour window
+that overlaps rollout. For a complete subsequent UTC window `[start,end)`, use
+CandyStore's event API with time bounds and the existing hook-receipt event
+identity to enumerate `candystore-context` outcomes; paginate to completion,
+record the window, total succeeded/skipped/failed counts and failed-reason
+counts, and inspect every failed receipt for evidence of `no_project` or
+`no_history`. These categories must account for **zero** failures; genuine
+failure reasons remain visible. Count reasoned `no_project` and `no_history`
+skips separately. If either category has zero observations, mark it as a
+coverage gap and exercise the installed path with the native SessionStart
+payload (`BB_HOOK_CLI=claude BB_HOOK_NATIVE=SessionStart` and cwd `/tmp` or
+`$HOME` for no-project); for no-history use a registered project whose
+`/context/latest` response actually contains no eligible sessions **and** no
+decisions after exclusion/time filters. Capture JSON stdout, shell exit status,
+and receipt evidence, not an invented category or modified historical event.
+The reported 34 failures/day is a pre-change observation, not a measurement
+from this procedure.
