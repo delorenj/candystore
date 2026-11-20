@@ -1,0 +1,31 @@
+name candystore
+bin candystore
+about "CandyStore event history and session handoffs"
+cmd serve help="Start the ingest and query HTTP server"
+cmd context help="Recover work across agent CLIs" {
+    cmd latest help="Recent sessions in the current project" {
+        flag --project help="Registry slug or project alias" {
+            arg <PROJECT>
+        }
+        flag --cwd help="Directory for project detection" {
+            arg <DIRECTORY>
+        }
+        flag --since help="ISO date/time or duration; default 30d" {
+            arg <SINCE>
+        }
+        flag --sessions help="Number of sessions, 1–10" {
+            arg <COUNT>
+        }
+        flag --exclude-session help="Session id to exclude" {
+            arg <SESSION>
+        }
+        flag --json help="Output JSON"
+        flag --hook-outcome help="Output private startup outcome"
+        flag --base-url help="CandyStore API base URL" {
+            arg <URL>
+        }
+        flag --timeout help="HTTP deadline in seconds" {
+            arg <SECONDS>
+        }
+    }
+}

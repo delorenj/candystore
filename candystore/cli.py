@@ -173,6 +173,9 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if "--usage-spec" in argv and "--" not in argv[:argv.index("--usage-spec")]:
+        sys.stdout.write(Path(__file__).with_name("candystore.usage.kdl").read_text())
+        return 0
     command_parser = parser()
     # Bare `candystore` prints help. It used to start the server, but the server
     # runs in the platform container (python -m candystore.main, never this
