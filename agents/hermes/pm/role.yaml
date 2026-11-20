@@ -65,3 +65,21 @@ ticket_provider:
   in_review: "In Progress"   # Krebs lifecycle v2: no review lane; review = In Progress + lifecycle:review
   completed: "Done"
   cancelled: "Cancelled"
+company_identity:
+  version: 1
+  subject: "87e1bfc8-6974-4a67-a9a5-2e53b3ee67ea"
+  handle: "candystore-pm"
+  email: "candystore-pm@agents.delo.sh"
+  status: "active"
+  enrolled_at: "2026-11-20T02:24:49.615Z"
+  bindings:
+    cloudflare_access:
+      principal: "cd33c5b251ef14510a976f3097f5b776.access"
+      instance: "https://delonet.cloudflareaccess.com"
+      credential_ref: "op://DeLoSecrets/3prbm2va5pdfbvs6w53dqz7dri/luqqs4dxjcrbdm3b6qrbbhoyji"
+    plane:
+      principal: "f6d6198a-468e-4196-bd48-2471fc202fcf"
+      instance: "https://plane.delo.sh/33god"
+      credential_ref: "op://DeLoSecrets/eesjrx56p2nravla2b66jokwtq/credential"
+      attribution_mode: "native"
+      native_actor_id: "f6d6198a-468e-4196-bd48-2471fc202fcf"
