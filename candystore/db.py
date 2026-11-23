@@ -1,7 +1,14 @@
 from __future__ import annotations
 
 import logging
+import multiprocessing
 import os
+import pickle
+import re
+import select
+import shlex
+import struct
+import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -36,15 +43,99 @@ def database_url() -> str:
     return os.environ.get("DATABASE_URL", DEFAULT_DATABASE_URL)
 
 
+DEFAULT_CONNECT_TIMEOUT_SECONDS = 3
+DEFAULT_STATEMENT_TIMEOUT_MS = 5000
+BOOT_MAX_ATTEMPTS = 4
+BOOT_RETRY_DELAYS_SECONDS = (0.25, 0.5, 1.0)
+DEFAULT_BOOT_DEADLINE_SECONDS = 60
+
+
+def _positive_int(value: str, name: str) -> int:
+    if not re.fullmatch(r"[0-9]+", value) or not 1 <= int(value) <= 2_147_483_647:
+        raise ValueError(f"{name} must be a positive integer <= 2147483647")
+    return int(value)
+
+
+class _BoundedCursor(psycopg2.extensions.cursor):
+    """Keep context's transaction-local cap from relaxing the session budget."""
+
+    def execute(self, query, vars=None):
+        if query == "SET LOCAL statement_timeout = '2500ms'":
+            # SHOW is a server round-trip, but no client-side estimate of the
+            # current session setting can account for prior SET LOCAL calls.
+            super().execute("SHOW statement_timeout")
+            current = super().fetchone()
+            current_ms = (
+                _statement_option(f"-c statement_timeout={current[0]}") if current else None
+            )
+            if current_ms is not None and current_ms < 2500:
+                return None
+        return super().execute(query, vars)
+
+
+def _statement_option(options: str) -> int | None:
+    """Read a preexisting libpq statement_timeout; refuse values we cannot bound."""
+    tokens = shlex.split(options)
+    values = []
+    for index, token in enumerate(tokens):
+        if token == "-c" and index + 1 < len(tokens):
+            values.append(tokens[index + 1])
+        elif token.startswith("-c") and token != "-c":
+            values.append(token[2:])
+        elif token.startswith("--"):
+            values.append(token[2:])
+    timeouts = []
+    for value in values:
+        key, sep, raw = value.partition("=")
+        if key != "statement_timeout":
+            continue
+        if not sep:
+            raise ValueError("statement_timeout option must have a value")
+        match = re.fullmatch(r"([0-9]+)(ms|s|min|h|d)?", raw)
+        factor = (
+            {None: 1, "ms": 1, "s": 1000, "min": 60000, "h": 3600000, "d": 86400000}[match[2]]
+            if match
+            else 1
+        )
+        if not match or not 1 <= int(match[1]) * factor <= 2_147_483_647:
+            raise ValueError("statement_timeout option must be a finite positive duration")
+        timeouts.append(int(match[1]) * factor)
+    return timeouts[-1] if timeouts else None
+
+
 def _connect():
-    return psycopg2.connect(database_url())
+    # Parse rather than reconstructing a URL: sslmode, application_name, host,
+    # credentials and any other libpq parameters survive unchanged.
+    params = psycopg2.extensions.parse_dsn(database_url())
+    timeout = _positive_int(
+        os.environ.get("CANDYSTORE_CONNECT_TIMEOUT_SECONDS", str(DEFAULT_CONNECT_TIMEOUT_SECONDS)),
+        "CANDYSTORE_CONNECT_TIMEOUT_SECONDS",
+    )
+    statement = _positive_int(
+        os.environ.get("CANDYSTORE_STATEMENT_TIMEOUT_MS", str(DEFAULT_STATEMENT_TIMEOUT_MS)),
+        "CANDYSTORE_STATEMENT_TIMEOUT_MS",
+    )
+    if "connect_timeout" in params:
+        existing = _positive_int(params["connect_timeout"], "DSN connect_timeout")
+        timeout = min(timeout, existing)
+    if "PGCONNECT_TIMEOUT" in os.environ:
+        timeout = min(timeout, _positive_int(os.environ["PGCONNECT_TIMEOUT"], "PGCONNECT_TIMEOUT"))
+    # URL options override PGOPTIONS in libpq. Append our tighter cap last,
+    # leaving every unrelated server option in its original order.
+    options = params.get("options", os.environ.get("PGOPTIONS", ""))
+    existing_statement = _statement_option(options)
+    if existing_statement is not None:
+        statement = min(statement, existing_statement)
+    params["connect_timeout"] = timeout
+    params["options"] = f"{options} -c statement_timeout={statement}ms".strip()
+    return psycopg2.connect(**params)
 
 
 @contextmanager
 def cursor() -> Iterator[Any]:
     conn = _connect()
     try:
-        cur = conn.cursor()
+        cur = conn.cursor(cursor_factory=_BoundedCursor)
         yield cur
         conn.commit()
     except Exception:
@@ -63,6 +154,141 @@ def init_schema() -> None:
     with cursor() as cur:
         for path in sorted(migrations_dir.glob("*.sql")):
             cur.execute(path.read_text(encoding="utf-8"))
+
+
+def _transient_boot_error(exc: psycopg2.OperationalError) -> bool:
+    code = exc.pgcode
+    if code is not None:
+        return code.startswith("08") or code in {"57P01", "57P02", "57P03", "53300"}
+    if isinstance(exc, psycopg2.errors.CrashShutdown):
+        return True
+    message = str(exc).lower()
+    return any(
+        fragment in message
+        for fragment in (
+            "connection refused",
+            "could not connect",
+            "connection timed out",
+            "timeout expired",
+            "server closed the connection",
+            # libpq's local Unix socket path when PostgreSQL has not started.
+            "no such file or directory",
+        )
+    ) and ("no such file or directory" not in message or "socket" in message)
+
+
+def _boot_worker(pipe, deadline: int) -> None:
+    try:
+        # Also bound the server's own work: killing a libpq client does not
+        # instantly interrupt an already-running PostgreSQL statement.
+        configured = _positive_int(
+            os.environ.get("CANDYSTORE_STATEMENT_TIMEOUT_MS", str(DEFAULT_STATEMENT_TIMEOUT_MS)),
+            "CANDYSTORE_STATEMENT_TIMEOUT_MS",
+        )
+        os.environ["CANDYSTORE_STATEMENT_TIMEOUT_MS"] = str(min(configured, deadline * 1000))
+        init_schema_with_retry()
+        pipe.send((True, None))
+    except BaseException as exc:
+        # Transport the original exception where possible, including SQLSTATE.
+        try:
+            pipe.send((False, exc))
+        except (TypeError, ValueError, OSError):
+            pipe.send((False, RuntimeError(f"schema initialization failed: {exc}")))
+    finally:
+        pipe.close()
+
+
+def _receive_boot_result(pipe, end: float, deadline: int):
+    """Read a complete multiprocessing Pipe frame without blocking past boot time."""
+    fd = pipe.fileno()
+
+    def read_exact(size: int) -> bytes:
+        parts = []
+        while size:
+            remaining = end - time.monotonic()
+            if remaining <= 0 or not select.select([fd], [], [], remaining)[0]:
+                raise TimeoutError(
+                    f"database schema initialization exceeded {deadline}s boot deadline"
+                )
+            chunk = os.read(fd, min(size, 65536))
+            if not chunk:
+                raise RuntimeError("database schema initialization worker exited without a result")
+            parts.append(chunk)
+            size -= len(chunk)
+        return b"".join(parts)
+
+    (size,) = struct.unpack("!i", read_exact(4))
+    # multiprocessing.Connection.send uses a 4-byte signed size (or -1 plus
+    # an 8-byte size for huge frames). A boot result beyond this cap is not
+    # useful; refuse it before allocating or waiting for the advertised body.
+    if size < 0 or size > 8 * 1024 * 1024:
+        raise RuntimeError("database schema initialization worker sent an oversized result")
+    return pickle.loads(read_exact(size))
+
+
+def init_schema_with_deadline() -> None:
+    """Bound the whole boot transaction, including DNS, all SQL and network I/O.
+
+    Boot runs in a disposable process: terminating it closes its libpq socket,
+    making PostgreSQL abort any uncommitted migration transaction. A thread
+    cannot safely interrupt libpq's blocking DNS or socket operations.
+    """
+    deadline = _positive_int(
+        os.environ.get("CANDYSTORE_BOOT_DEADLINE_SECONDS", str(DEFAULT_BOOT_DEADLINE_SECONDS)),
+        "CANDYSTORE_BOOT_DEADLINE_SECONDS",
+    )
+    if os.name != "posix" or "fork" not in multiprocessing.get_all_start_methods():
+        raise RuntimeError("bounded database startup requires POSIX fork")
+    ctx = multiprocessing.get_context("fork")
+    parent, child = ctx.Pipe(duplex=False)
+    process = ctx.Process(
+        target=_boot_worker, args=(child, deadline), name="candystore-schema-boot"
+    )
+    started = time.monotonic()
+    end = started + deadline
+    try:
+        process.start()
+        child.close()
+        success, error = _receive_boot_result(parent, end, deadline)
+        if not success:
+            raise error
+        # A result is only successful when the worker has actually exited.
+        process.join(timeout=max(0, end - time.monotonic()))
+        if process.is_alive():
+            raise TimeoutError(f"database schema initialization exceeded {deadline}s boot deadline")
+        if process.exitcode != 0:
+            raise RuntimeError(f"database schema initialization worker exited {process.exitcode}")
+    finally:
+        parent.close()
+        child.close()
+        if process.pid is not None:
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=2)
+            if process.is_alive():
+                process.kill()
+            process.join()
+
+
+def init_schema_with_retry() -> None:
+    """Retry only transient startup availability faults, never SQL/migration errors."""
+    # PostgreSQL reports canceled statements as OperationalError (57014),
+    # but retrying a broken migration would just rerun it four times.
+    for attempt in range(BOOT_MAX_ATTEMPTS):
+        try:
+            init_schema()
+            return
+        except psycopg2.OperationalError as exc:
+            if not _transient_boot_error(exc) or attempt == BOOT_MAX_ATTEMPTS - 1:
+                raise
+            delay = BOOT_RETRY_DELAYS_SECONDS[attempt]
+            logger.warning(
+                "database not ready (attempt %s/%s); retrying in %ss",
+                attempt + 1,
+                BOOT_MAX_ATTEMPTS,
+                delay,
+            )
+            time.sleep(delay)
 
 
 def check_connection() -> bool:
