@@ -3,8 +3,11 @@ from __future__ import annotations
 import logging
 import multiprocessing
 import os
+import pickle
 import re
+import select
 import shlex
+import struct
 import time
 import uuid
 from collections.abc import Iterator
@@ -195,6 +198,34 @@ def _boot_worker(pipe, deadline: int) -> None:
         pipe.close()
 
 
+def _receive_boot_result(pipe, end: float, deadline: int):
+    """Read a complete multiprocessing Pipe frame without blocking past boot time."""
+    fd = pipe.fileno()
+
+    def read_exact(size: int) -> bytes:
+        parts = []
+        while size:
+            remaining = end - time.monotonic()
+            if remaining <= 0 or not select.select([fd], [], [], remaining)[0]:
+                raise TimeoutError(
+                    f"database schema initialization exceeded {deadline}s boot deadline"
+                )
+            chunk = os.read(fd, min(size, 65536))
+            if not chunk:
+                raise RuntimeError("database schema initialization worker exited without a result")
+            parts.append(chunk)
+            size -= len(chunk)
+        return b"".join(parts)
+
+    (size,) = struct.unpack("!i", read_exact(4))
+    # multiprocessing.Connection.send uses a 4-byte signed size (or -1 plus
+    # an 8-byte size for huge frames). A boot result beyond this cap is not
+    # useful; refuse it before allocating or waiting for the advertised body.
+    if size < 0 or size > 8 * 1024 * 1024:
+        raise RuntimeError("database schema initialization worker sent an oversized result")
+    return pickle.loads(read_exact(size))
+
+
 def init_schema_with_deadline() -> None:
     """Bound the whole boot transaction, including DNS, all SQL and network I/O.
 
@@ -214,22 +245,15 @@ def init_schema_with_deadline() -> None:
         target=_boot_worker, args=(child, deadline), name="candystore-schema-boot"
     )
     started = time.monotonic()
+    end = started + deadline
     try:
         process.start()
         child.close()
-        remaining = max(0, deadline - (time.monotonic() - started))
-        if not parent.poll(remaining):
-            raise TimeoutError(f"database schema initialization exceeded {deadline}s boot deadline")
-        try:
-            success, error = parent.recv()
-        except EOFError as exc:
-            raise RuntimeError(
-                "database schema initialization worker exited without a result"
-            ) from exc
+        success, error = _receive_boot_result(parent, end, deadline)
         if not success:
             raise error
         # A result is only successful when the worker has actually exited.
-        process.join(timeout=max(0, deadline - (time.monotonic() - started)))
+        process.join(timeout=max(0, end - time.monotonic()))
         if process.is_alive():
             raise TimeoutError(f"database schema initialization exceeded {deadline}s boot deadline")
         if process.exitcode != 0:

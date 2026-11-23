@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import multiprocessing
+import os
+import struct
 import time
 
 import psycopg2
@@ -200,6 +203,46 @@ def test_boot_deadline_terminates_worker_without_leaking(monkeypatch):
     with pytest.raises(TimeoutError, match="boot deadline"):
         db.init_schema_with_deadline()
     assert time.monotonic() - started < 5
+    assert {child.pid for child in multiprocessing.active_children()} == before
+
+
+def test_boot_deadline_partial_result_does_not_hang_or_leak(monkeypatch):
+    monkeypatch.setenv("CANDYSTORE_BOOT_DEADLINE_SECONDS", "1")
+
+    def partial_send(pipe, deadline):
+        os.write(pipe.fileno(), struct.pack("!i", 1_000_000) + b"x")
+        time.sleep(30)
+
+    monkeypatch.setattr(db, "_boot_worker", partial_send)
+    before = {child.pid for child in multiprocessing.active_children()}
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match="boot deadline"):
+        db.init_schema_with_deadline()
+    assert time.monotonic() - started < 4
+    assert {child.pid for child in multiprocessing.active_children()} == before
+
+
+def test_boot_deadline_truncated_and_oversized_results(monkeypatch):
+    monkeypatch.setenv("CANDYSTORE_BOOT_DEADLINE_SECONDS", "1")
+
+    def truncated(pipe, deadline):
+        os.write(pipe.fileno(), struct.pack("!i", 100) + b"x")
+        pipe.close()
+
+    monkeypatch.setattr(db, "_boot_worker", truncated)
+    with pytest.raises(RuntimeError, match="exited without a result"):
+        db.init_schema_with_deadline()
+
+    def oversized(pipe, deadline):
+        os.write(pipe.fileno(), struct.pack("!i", 9 * 1024 * 1024))
+        time.sleep(30)
+
+    monkeypatch.setattr(db, "_boot_worker", oversized)
+    before = {child.pid for child in multiprocessing.active_children()}
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match="oversized result"):
+        db.init_schema_with_deadline()
+    assert time.monotonic() - started < 4
     assert {child.pid for child in multiprocessing.active_children()} == before
 
 
