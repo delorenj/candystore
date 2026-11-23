@@ -16,7 +16,7 @@ import psycopg2
 
 from candystore import stats
 from candystore.context import ContextError, latest_context
-from candystore.db import check_connection, init_schema_with_retry, record_dead_letter
+from candystore.db import check_connection, init_schema_with_deadline, record_dead_letter
 from candystore.ingest import handle_event, known_event_routes, subscribe_response
 from candystore.query import (
     COUNT_CAP,
@@ -484,7 +484,7 @@ def run(host: str = APP_HOST, port: int = APP_PORT) -> None:
         stream=sys.stderr,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    init_schema_with_retry()
+    init_schema_with_deadline()
     server = ThreadingHTTPServer((host, port), Handler)
     logger.info("candystore: listening on %s:%s", host, port)
     sys.stderr.flush()

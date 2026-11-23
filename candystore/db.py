@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import multiprocessing
 import os
 import re
 import shlex
@@ -43,6 +44,7 @@ DEFAULT_CONNECT_TIMEOUT_SECONDS = 3
 DEFAULT_STATEMENT_TIMEOUT_MS = 5000
 BOOT_MAX_ATTEMPTS = 4
 BOOT_RETRY_DELAYS_SECONDS = (0.25, 0.5, 1.0)
+DEFAULT_BOOT_DEADLINE_SECONDS = 60
 
 
 def _positive_int(value: str, name: str) -> int:
@@ -151,6 +153,99 @@ def init_schema() -> None:
             cur.execute(path.read_text(encoding="utf-8"))
 
 
+def _transient_boot_error(exc: psycopg2.OperationalError) -> bool:
+    code = exc.pgcode
+    if code is not None:
+        return code.startswith("08") or code in {"57P01", "57P02", "57P03", "53300"}
+    if isinstance(exc, psycopg2.errors.CrashShutdown):
+        return True
+    message = str(exc).lower()
+    return any(
+        fragment in message
+        for fragment in (
+            "connection refused",
+            "could not connect",
+            "connection timed out",
+            "timeout expired",
+            "server closed the connection",
+            # libpq's local Unix socket path when PostgreSQL has not started.
+            "no such file or directory",
+        )
+    ) and ("no such file or directory" not in message or "socket" in message)
+
+
+def _boot_worker(pipe, deadline: int) -> None:
+    try:
+        # Also bound the server's own work: killing a libpq client does not
+        # instantly interrupt an already-running PostgreSQL statement.
+        configured = _positive_int(
+            os.environ.get("CANDYSTORE_STATEMENT_TIMEOUT_MS", str(DEFAULT_STATEMENT_TIMEOUT_MS)),
+            "CANDYSTORE_STATEMENT_TIMEOUT_MS",
+        )
+        os.environ["CANDYSTORE_STATEMENT_TIMEOUT_MS"] = str(min(configured, deadline * 1000))
+        init_schema_with_retry()
+        pipe.send((True, None))
+    except BaseException as exc:
+        # Transport the original exception where possible, including SQLSTATE.
+        try:
+            pipe.send((False, exc))
+        except (TypeError, ValueError, OSError):
+            pipe.send((False, RuntimeError(f"schema initialization failed: {exc}")))
+    finally:
+        pipe.close()
+
+
+def init_schema_with_deadline() -> None:
+    """Bound the whole boot transaction, including DNS, all SQL and network I/O.
+
+    Boot runs in a disposable process: terminating it closes its libpq socket,
+    making PostgreSQL abort any uncommitted migration transaction. A thread
+    cannot safely interrupt libpq's blocking DNS or socket operations.
+    """
+    deadline = _positive_int(
+        os.environ.get("CANDYSTORE_BOOT_DEADLINE_SECONDS", str(DEFAULT_BOOT_DEADLINE_SECONDS)),
+        "CANDYSTORE_BOOT_DEADLINE_SECONDS",
+    )
+    if os.name != "posix" or "fork" not in multiprocessing.get_all_start_methods():
+        raise RuntimeError("bounded database startup requires POSIX fork")
+    ctx = multiprocessing.get_context("fork")
+    parent, child = ctx.Pipe(duplex=False)
+    process = ctx.Process(
+        target=_boot_worker, args=(child, deadline), name="candystore-schema-boot"
+    )
+    started = time.monotonic()
+    try:
+        process.start()
+        child.close()
+        remaining = max(0, deadline - (time.monotonic() - started))
+        if not parent.poll(remaining):
+            raise TimeoutError(f"database schema initialization exceeded {deadline}s boot deadline")
+        try:
+            success, error = parent.recv()
+        except EOFError as exc:
+            raise RuntimeError(
+                "database schema initialization worker exited without a result"
+            ) from exc
+        if not success:
+            raise error
+        # A result is only successful when the worker has actually exited.
+        process.join(timeout=max(0, deadline - (time.monotonic() - started)))
+        if process.is_alive():
+            raise TimeoutError(f"database schema initialization exceeded {deadline}s boot deadline")
+        if process.exitcode != 0:
+            raise RuntimeError(f"database schema initialization worker exited {process.exitcode}")
+    finally:
+        parent.close()
+        child.close()
+        if process.pid is not None:
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=2)
+            if process.is_alive():
+                process.kill()
+            process.join()
+
+
 def init_schema_with_retry() -> None:
     """Retry only transient startup availability faults, never SQL/migration errors."""
     # PostgreSQL reports canceled statements as OperationalError (57014),
@@ -160,23 +255,7 @@ def init_schema_with_retry() -> None:
             init_schema()
             return
         except psycopg2.OperationalError as exc:
-            code = exc.pgcode
-            transient = (
-                code is not None and (code.startswith("08") or code in {"57P01", "57P03", "53300"})
-            ) or (
-                code is None
-                and any(
-                    fragment in str(exc).lower()
-                    for fragment in (
-                        "connection refused",
-                        "could not connect",
-                        "connection timed out",
-                        "timeout expired",
-                        "server closed the connection",
-                    )
-                )
-            )
-            if not transient or attempt == BOOT_MAX_ATTEMPTS - 1:
+            if not _transient_boot_error(exc) or attempt == BOOT_MAX_ATTEMPTS - 1:
                 raise
             delay = BOOT_RETRY_DELAYS_SECONDS[attempt]
             logger.warning(

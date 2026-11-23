@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import psycopg2
 import pytest
 
@@ -132,7 +134,7 @@ def test_boot_nontransient_does_not_retry_or_start_server(monkeypatch):
         db.init_schema_with_retry()
     assert sleeps == []
     monkeypatch.setattr(
-        main, "init_schema_with_retry", lambda: (_ for _ in ()).throw(RuntimeError("db failed"))
+        main, "init_schema_with_deadline", lambda: (_ for _ in ()).throw(RuntimeError("db failed"))
     )
     monkeypatch.setattr(main, "ThreadingHTTPServer", lambda *args: pytest.fail("server started"))
     with pytest.raises(RuntimeError):
@@ -149,9 +151,74 @@ def test_boot_starts_one_server_after_recovery(monkeypatch):
         def server_close(self):
             calls.append("close")
 
-    monkeypatch.setattr(main, "init_schema_with_retry", lambda: calls.append("schema"))
+    monkeypatch.setattr(main, "init_schema_with_deadline", lambda: calls.append("schema"))
     monkeypatch.setattr(
         main, "ThreadingHTTPServer", lambda *args: (calls.append("server"), Server())[1]
     )
     main.run("127.0.0.1", 0)
     assert calls == ["schema", "server", "serve", "close"]
+
+
+@pytest.mark.parametrize(
+    "error,transient",
+    [
+        (psycopg2.errors.CrashShutdown("crash shutdown"), True),
+        (
+            psycopg2.OperationalError(
+                'connection to server on socket "/var/run/postgresql/.s.PGSQL.5432" failed: '
+                "No such file or directory"
+            ),
+            True,
+        ),
+        (psycopg2.OperationalError("No such file or directory: migration.sql"), False),
+        (psycopg2.errors.QueryCanceled("statement timeout"), False),
+    ],
+)
+def test_boot_classification_and_no_sleep_on_nontransient(monkeypatch, error, transient):
+    attempts = []
+    sleeps = []
+    monkeypatch.setattr(db.time, "sleep", sleeps.append)
+
+    def fail():
+        attempts.append(1)
+        raise error
+
+    monkeypatch.setattr(db, "init_schema", fail)
+    with pytest.raises(type(error)):
+        db.init_schema_with_retry()
+    assert len(attempts) == (4 if transient else 1)
+    assert sleeps == ([0.25, 0.5, 1.0] if transient else [])
+
+
+def test_boot_deadline_terminates_worker_without_leaking(monkeypatch):
+    import multiprocessing
+
+    monkeypatch.setenv("CANDYSTORE_BOOT_DEADLINE_SECONDS", "1")
+    monkeypatch.setattr(db, "init_schema_with_retry", lambda: time.sleep(30))
+    before = {child.pid for child in multiprocessing.active_children()}
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match="boot deadline"):
+        db.init_schema_with_deadline()
+    assert time.monotonic() - started < 5
+    assert {child.pid for child in multiprocessing.active_children()} == before
+
+
+def test_boot_deadline_success_and_error_propagation(monkeypatch):
+    monkeypatch.setenv("CANDYSTORE_BOOT_DEADLINE_SECONDS", "2")
+    monkeypatch.setattr(db, "init_schema_with_retry", lambda: None)
+    db.init_schema_with_deadline()
+    monkeypatch.setattr(
+        db, "init_schema_with_retry", lambda: (_ for _ in ()).throw(ValueError("bad config"))
+    )
+    with pytest.raises(ValueError, match="bad config"):
+        db.init_schema_with_deadline()
+
+
+def test_boot_deadline_invalid_and_unsupported_fail_before_spawn(monkeypatch):
+    monkeypatch.setenv("CANDYSTORE_BOOT_DEADLINE_SECONDS", "0")
+    with pytest.raises(ValueError, match="CANDYSTORE_BOOT_DEADLINE_SECONDS"):
+        db.init_schema_with_deadline()
+    monkeypatch.setenv("CANDYSTORE_BOOT_DEADLINE_SECONDS", "2")
+    monkeypatch.setattr(db.os, "name", "nt")
+    with pytest.raises(RuntimeError, match="POSIX fork"):
+        db.init_schema_with_deadline()

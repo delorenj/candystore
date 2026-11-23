@@ -72,3 +72,38 @@ def test_disposable_postgres_statement_budget_and_context(monkeypatch):
     result = context.latest_context(project="timeout-proof", sessions=1)
     assert result["sessions"] == []
     assert observed == ["300ms"]
+
+
+@pytest.mark.skipif(not os.getenv("CANDYS31_TEST_DATABASE_URL"), reason="isolated PG URL required")
+def test_disposable_postgres_boot_deadline_cancels_transaction(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", os.environ["CANDYS31_TEST_DATABASE_URL"])
+    monkeypatch.setenv("CANDYSTORE_STATEMENT_TIMEOUT_MS", "20000")
+    monkeypatch.setenv("CANDYSTORE_BOOT_DEADLINE_SECONDS", "1")
+
+    def slow_migration():
+        with db.cursor() as cur:
+            cur.execute("SELECT pg_sleep(10)")
+
+    monkeypatch.setattr(db, "init_schema_with_retry", slow_migration)
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match="boot deadline"):
+        db.init_schema_with_deadline()
+    assert time.monotonic() - started < 5
+    # Parent has reaped the child; PostgreSQL cancellation is asynchronous,
+    # so observe it through a bounded polling window before testing recovery.
+    active = None
+    for _ in range(30):
+        with db.cursor() as cur:
+            cur.execute(
+                "SELECT count(*) FROM pg_stat_activity "
+                "WHERE datname = current_database() AND state = 'active' "
+                "AND query = 'SELECT pg_sleep(10)' AND pid <> pg_backend_pid()"
+            )
+            active = cur.fetchone()[0]
+        if active == 0:
+            break
+        time.sleep(0.1)
+    assert active == 0
+    with db.cursor() as cur:
+        cur.execute("SELECT 1")
+        assert cur.fetchone() == (1,)
