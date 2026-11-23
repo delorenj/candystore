@@ -1,0 +1,11 @@
+# Docker readiness healthcheck (CANDYS-30)
+
+The `candystore` Compose healthcheck runs the Python stdlib HTTP client already in the image against `http://127.0.0.1:3001/readyz`. A 204 response exits zero; HTTP 503, refused connections and response timeouts exit nonzero. `/healthz` remains a separate DB-independent 204 liveness endpoint. `/readyz` checks DB connectivity only: it does not assert schema, insert capability, or write privileges.
+
+The client timeout is 3 seconds, and Docker limits each check to 3 seconds. Checks run every 30 seconds with 10 consecutive failures required and a 5-second startup grace. Once an already-healthy container loses DB access, the nominal upper bound to Docker `unhealthy` is **10 × (30 + 3) = 330 seconds (5 minutes 30 seconds)**, allowing for Docker's scheduling/inspection overhead. The startup grace exempts failed checks *only while starting*; it does not extend the outage window after a healthy state. A recovered 204 check restores `healthy` on its next run (nominally within 33 seconds plus scheduling overhead). This is an operational check interval, not a guarantee that every ingest/query operation succeeds.
+
+Source-only verification (no production Compose `up` or `down`):
+
+- `docker compose -f compose.yml config --format json` renders the configuration without starting services. `tests/test_readiness_healthcheck.py` reads the configured command from that rendered model, executes it against isolated 204, 503, delayed and refused HTTP fixtures, and tests the actual HTTP handler's `/healthz` and `/readyz` branches with a patched DB connectivity result.
+- `mise run test` and `mise run lint` are repository entry points. DB-dependent suite cases require a guarded disposable `CANDYSTORE_TEST_DATABASE_URL`; skipped cases must not be counted as passed DB coverage.
+- A disposable DB-outage proof must use a separately named Docker network, a test PostgreSQL container, and an app container built from the candidate source, with no host ports, production volumes, Dapr or Bloodbank attachment. Inspect Docker health, disconnect only that test DB, wait for `unhealthy` within the check window above, reconnect and observe `healthy` after recovery. Remove only the resources created by the proof. This verification cannot claim that the installed production app has been restarted or is healthy.
