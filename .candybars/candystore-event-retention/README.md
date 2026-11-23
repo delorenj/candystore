@@ -16,5 +16,6 @@ Nothing is deleted that is not already durable in an archive.
 - Archives live on the same disk as the database, which is not off-host
   recovery. See `docs/audits/2026-11-11-content-retention.md` for the off-host plan.
 
-First rule: `bloodbank.agent.tool.requested 30` (operator request, 2026-11-23).
-The first manual run removed 303,462 rows.
+Rules (operator, 2026-11-23): `agent.tool.requested`, `agent.hook.updated` and
+`llm.allowance.observed` at 30 days. The first manual run removed 303,462
+tool.requested rows (archive 136 MB, SHA-256 in its manifest).

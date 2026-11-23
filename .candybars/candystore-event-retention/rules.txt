@@ -11,3 +11,5 @@
 #   llm.allowance.observed    851k  / 397k
 #   cron.candybar.*           750k  / 0      (began 2026-10-26)
 bloodbank.agent.tool.requested 30
+bloodbank.agent.hook.updated 30
+bloodbank.llm.allowance.observed 30
