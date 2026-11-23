@@ -1,0 +1,13 @@
+# CandyStore event retention: one rule per line, "<event type> <days>".
+# Rows older than <days> by ARRIVAL (received_at) are archived to
+# ~/backups/candystore/event-archive/*.jsonl.gz, fsynced, then deleted.
+# Restore any archive with: uv run candystore restore <file.jsonl.gz>
+#
+# Add a type here to put it under retention. Measured volume (2026-11-23),
+# rows total / older than 30 days:
+#   agent.hook.updated        2.46M / 848k   (payload-free hook health facts)
+#   llm.usage.recorded        1.01M / 314k
+#   agent.tool.completed      867k  / 301k
+#   llm.allowance.observed    851k  / 397k
+#   cron.candybar.*           750k  / 0      (began 2026-10-26)
+bloodbank.agent.tool.requested 30

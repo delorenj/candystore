@@ -1,0 +1,12 @@
+[candybar]
+name = "candystore-event-retention"
+description = "Archive-then-delete CandyStore events past their retention (rules in .candybars/candystore-event-retention/rules.txt)"
+schedule = "30 8 * * *"
+timezone = "America/New_York"
+enabled = false
+
+[candybar.runner]
+kind = "exec"
+argv = ["./.candybars/candystore-event-retention/prune.sh"]
+timeout_s = 3600
+on_failure = ["ntfy-alert", "--title", "candystore-event-retention", "CandyStore event retention prune failed; see candybar history candystore-event-retention"]

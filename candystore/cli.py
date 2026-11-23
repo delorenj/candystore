@@ -168,6 +168,22 @@ def parser() -> argparse.ArgumentParser:
         help="Candystore API base; defaults to $CANDYSTORE_URL, then the 8683 port contract",
     )
     latest.add_argument("--timeout", type=float, default=5, help="HTTP deadline in seconds")
+    prune = commands.add_parser(
+        "prune", help="archive then delete events of given types older than N days"
+    )
+    prune.add_argument(
+        "--type", dest="types", action="append", required=True,
+        help="event type to prune (repeatable), e.g. bloodbank.agent.tool.requested",
+    )
+    prune.add_argument(
+        "--older-than", type=int, required=True, metavar="DAYS", help="arrival age in days"
+    )
+    prune.add_argument("--archive-dir", type=Path, help="gzip JSONL archive directory")
+    prune.add_argument("--batch", type=int, default=5000, help="rows per transaction")
+    prune.add_argument("--limit", type=int, help="stop after this many rows (drills)")
+    prune.add_argument("--dry-run", action="store_true", help="count eligible rows only")
+    restore = commands.add_parser("restore", help="re-insert events from a prune archive")
+    restore.add_argument("archive", type=Path, help="events-*.jsonl.gz written by prune")
     return root
 
 
@@ -188,6 +204,26 @@ def main(argv: list[str] | None = None) -> int:
 
         return serve()
     args = command_parser.parse_args(argv)
+    if args.command in ("prune", "restore"):
+        from candystore import retention
+
+        try:
+            if args.command == "prune":
+                report = retention.prune(
+                    args.types,
+                    args.older_than,
+                    args.archive_dir or retention.DEFAULT_ARCHIVE_DIR,
+                    batch=args.batch,
+                    limit=args.limit,
+                    dry_run=args.dry_run,
+                )
+            else:
+                report = retention.restore(args.archive)
+        except (ValueError, RuntimeError, OSError) as exc:
+            print(f"candystore: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(report, indent=2, default=str))
+        return 0
     if not 1 <= args.sessions <= 10:
         command_parser.error("--sessions must be between 1 and 10")
     if not 0 < args.timeout <= 30:
