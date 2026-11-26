@@ -42,8 +42,37 @@ to the other, and every project filter (`context latest`, the feed, heat maps)
 reads it. The app places a directory the first time it sees one, resolved
 against the `projects` table. That table is a projection of the pjangler
 registry, which only the host can read, so a newly registered project appears
-after the next `mise run project:sync`. `mise run project:sync:install` adds an
-hourly user timer that runs it.
+after the next `mise run project:sync`. Candybar runs it hourly
+(`candystore-project-sync`; the old user timer is retired).
+
+## Full-history rollups
+
+A scheduled read model must never scan `events` (6.1M rows / 41 GB) to count
+something across all history; its cost would grow with the trail, not with
+what changed. A rollup is a small table that statement-level triggers on
+`events` keep exact in the same transaction as every INSERT, DELETE, UPDATE
+and TRUNCATE (`migrations/011_event_rollups.sql`). `work_dirs` (events per
+working directory) feeds project:sync, which used to `GROUP BY` the whole
+trail every hour (11-26 s) and now reads ~2k rows.
+
+- `python -m candystore.rollups seed` adds the history that predates the
+  triggers, once, exactly and without locking out ingest. project:sync seeds
+  an unready rollup itself.
+- `mise run rollups:verify` proves each rollup equals a full scan taken in the
+  same snapshot. `mise run rollups:status` shows readiness and seed cost.
+- A new rollup: copy 011's table + four triggers, register it in `ROLLUPS`
+  (`candystore/rollups.py`) with the identical key expression.
+
+## Index health
+
+`mise run db:check` runs amcheck `bt_index_check` on every btree index
+(`heapallindexed` on tables under 2 GB) and reports collation-version drift;
+it exits 1 on either. The app also logs drift at boot. Why: this cluster was
+initdb'd on musl (postgres:16-alpine) and moved to glibc
+(pgvector/pgvector:pg16) on 2026-10-06 with no REINDEX, after which
+`project_dir_map_pkey` admitted 63 duplicate keys. The Postgres image is
+pinned to `pg16-bookworm` so a pull can never change the C library under the
+data dir.
 
 ## API
 

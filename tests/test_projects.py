@@ -264,8 +264,11 @@ def test_placement_never_overwrites_a_synced_row(db, placement):
     )
 
 
-def test_main_gives_the_sync_batch_job_a_longer_statement_budget(monkeypatch):
-    """The full-table directory count outlasts the API's 5 s cap; main() must widen it for the job only."""
+def test_main_runs_the_sync_under_the_interactive_budget(monkeypatch):
+    """The directory count now reads the work_dirs rollup, so the hourly job no
+    longer widens the API's 5 s cap (the 240 s stopgap of 73d527e is gone).
+    Only a seed or a pre-011 fallback scan carries its own budget, and only for
+    its own connection (candystore.rollups.seed_budget_ms)."""
     import candystore.projects as projects
 
     seen = {}
@@ -276,13 +279,9 @@ def test_main_gives_the_sync_batch_job_a_longer_statement_budget(monkeypatch):
         seen["budget"] = os.environ.get("CANDYSTORE_STATEMENT_TIMEOUT_MS")
         raise projects.RegistryError("stop here")
 
-    # setenv-then-delenv makes monkeypatch restore "absent" afterwards, so main()'s setdefault cannot leak.
+    # setenv-then-delenv makes monkeypatch restore "absent" afterwards.
     monkeypatch.setenv("CANDYSTORE_STATEMENT_TIMEOUT_MS", "0")
     monkeypatch.delenv("CANDYSTORE_STATEMENT_TIMEOUT_MS")
     monkeypatch.setattr(projects, "sync", fake_sync)
     assert projects.main() == 1
-    assert seen["budget"] == projects.SYNC_STATEMENT_TIMEOUT_MS
-
-    monkeypatch.setenv("CANDYSTORE_STATEMENT_TIMEOUT_MS", "9000")
-    assert projects.main() == 1
-    assert seen["budget"] == "9000"
+    assert seen["budget"] is None

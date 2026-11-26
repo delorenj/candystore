@@ -103,7 +103,13 @@ def _statement_option(options: str) -> int | None:
     return timeouts[-1] if timeouts else None
 
 
-def _connect():
+def _connect(statement_timeout_ms: int | None = None):
+    """Open a bounded connection.
+
+    `statement_timeout_ms` replaces the interactive default for a caller that
+    is a named batch operation with its own budget (a rollup seed, a retention
+    batch). A tighter DSN or PGOPTIONS cap still wins either way.
+    """
     # Parse rather than reconstructing a URL: sslmode, application_name, host,
     # credentials and any other libpq parameters survive unchanged.
     params = psycopg2.extensions.parse_dsn(database_url())
@@ -111,10 +117,13 @@ def _connect():
         os.environ.get("CANDYSTORE_CONNECT_TIMEOUT_SECONDS", str(DEFAULT_CONNECT_TIMEOUT_SECONDS)),
         "CANDYSTORE_CONNECT_TIMEOUT_SECONDS",
     )
-    statement = _positive_int(
-        os.environ.get("CANDYSTORE_STATEMENT_TIMEOUT_MS", str(DEFAULT_STATEMENT_TIMEOUT_MS)),
-        "CANDYSTORE_STATEMENT_TIMEOUT_MS",
-    )
+    if statement_timeout_ms is not None:
+        statement = _positive_int(str(statement_timeout_ms), "statement_timeout_ms")
+    else:
+        statement = _positive_int(
+            os.environ.get("CANDYSTORE_STATEMENT_TIMEOUT_MS", str(DEFAULT_STATEMENT_TIMEOUT_MS)),
+            "CANDYSTORE_STATEMENT_TIMEOUT_MS",
+        )
     if "connect_timeout" in params:
         existing = _positive_int(params["connect_timeout"], "DSN connect_timeout")
         timeout = min(timeout, existing)
@@ -154,6 +163,46 @@ def init_schema() -> None:
     with cursor() as cur:
         for path in sorted(migrations_dir.glob("*.sql")):
             cur.execute(path.read_text(encoding="utf-8"))
+
+    warn_on_collation_drift()
+
+
+def collation_drift() -> tuple[str | None, str | None] | None:
+    """(recorded, actual) when this database's collation version has drifted.
+
+    A text btree index is sorted by the C library that built it. This cluster
+    was initdb'd on postgres:16-alpine (musl: byte order, no version) and has
+    run on pgvector/pgvector:pg16 (Debian, glibc 2.36) since 2026-10-06 with
+    no REINDEX. 1806 of 1833 work_dirs sort differently under the two, so
+    `project_dir_map_pkey` stopped finding existing keys and the map grew 63
+    duplicate primary keys (cleared and reindexed 2026-11-26). A NULL recorded
+    version is drift too: it is how a musl-built database looks, and Postgres
+    stays silent about it.
+    """
+    with cursor() as cur:
+        cur.execute(
+            "SELECT datcollversion, pg_database_collation_actual_version(oid) "
+            "FROM pg_database WHERE datname = current_database()"
+        )
+        recorded, actual = cur.fetchone()
+    return None if recorded == actual else (recorded, actual)
+
+
+def warn_on_collation_drift() -> None:
+    try:
+        drift = collation_drift()
+    except Exception:  # noqa: BLE001 - advisory; never fail boot over the check itself
+        logger.warning("collation version check failed", exc_info=True)
+        return
+    if drift is not None:
+        logger.error(
+            "collation version drift: database records %r but the C library provides %r. "
+            "Text-keyed btree indexes built before the change may be misordered and can "
+            "silently admit duplicate keys. Run `mise run db:check`, REINDEX CONCURRENTLY "
+            "every collatable index built before the change, then "
+            "ALTER DATABASE <db> REFRESH COLLATION VERSION.",
+            *drift,
+        )
 
 
 def _transient_boot_error(exc: psycopg2.OperationalError) -> bool:

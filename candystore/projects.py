@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import shutil
 import subprocess
 import threading
@@ -230,16 +229,25 @@ def build_alias_map(projects: list[Project]) -> dict[str, tuple[str, str]]:
 
 
 def observed_work_dirs() -> dict[str, int]:
-    """Every distinct working directory in the trail, with its event count."""
-    sql = f"""
-    SELECT {WORK_DIR_EXPR} AS work_dir, COUNT(*) AS seen
-    FROM events
-    WHERE {WORK_DIR_EXPR} IS NOT NULL
-    GROUP BY 1
+    """Every distinct working directory in the trail, with its event count.
+
+    Read from the `work_dirs` rollup (migrations/011_event_rollups.sql), which
+    triggers keep current as events are written, so this costs ~2k rows
+    instead of a scan of the whole trail. It used to `GROUP BY WORK_DIR_EXPR`
+    over every event: at 6.1M rows that is an 11-26 s parallel seq scan that
+    the API's 5 s cap cancelled every hour from 2026-11-12. An unseeded rollup
+    is seeded here once (exact and online, see candystore/rollups.py). Only if
+    the app has not booted migration 011 yet does this fall back to the old
+    scan, under the seed budget, and say so.
     """
-    with cursor() as cur:
-        cur.execute(sql)
-        return {row[0]: row[1] for row in cur.fetchall()}
+    from candystore import rollups  # rollups imports WORK_DIR_EXPR from here
+
+    try:
+        rollups.ensure_ready(rollups.WORK_DIRS)
+        return rollups.counts(rollups.WORK_DIRS)
+    except rollups.RollupMissing as exc:
+        logger.warning("%s; falling back to a full scan of events", exc)
+        return rollups.full_scan(rollups.WORK_DIRS)
 
 
 def sync(projects: list[Project] | None = None) -> dict[str, int]:
@@ -382,22 +390,13 @@ def place_work_dir(data: Any) -> None:
         _placed_dirs.add(work_dir)
 
 
-# `observed_work_dirs()` has to count every event: `WORK_DIR_EXPR` is an expression over
-# `data`, so Postgres cannot answer the GROUP BY from `idx_events_context_workdir_time`
-# alone (no index-only scan on an expression index) and reads the whole table. At 6.1M
-# events / 41 GB that is ~26 s, which the API's interactive 5 s statement cap cancels.
-# This is a batch job, not a request: give it the budget of its unit (TimeoutStartSec=5min)
-# minus a margin. An operator-set CANDYSTORE_STATEMENT_TIMEOUT_MS (or a tighter DSN
-# statement_timeout) still wins; see db._connect.
-SYNC_STATEMENT_TIMEOUT_MS = "240000"
-
-
 def main() -> int:
-    os.environ.setdefault("CANDYSTORE_STATEMENT_TIMEOUT_MS", SYNC_STATEMENT_TIMEOUT_MS)
+    from candystore.rollups import RollupError
+
     logging.basicConfig(level="INFO", format="%(message)s")
     try:
         counts = sync()
-    except RegistryError as exc:
+    except (RegistryError, RollupError) as exc:
         logger.error("project:sync failed: %s", exc)
         return 1
 

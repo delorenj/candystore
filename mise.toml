@@ -55,6 +55,18 @@ sed 's/CREATE INDEX IF NOT EXISTS/CREATE INDEX CONCURRENTLY IF NOT EXISTS/' '{{c
 docker compose -f '{{config_root}}/../33god-platform/compose.yaml' exec -T candystore-postgres psql -U candystore -d candystore -v ON_ERROR_STOP=1 -c 'ANALYZE events'
 """
 
+[tasks."db:check"]
+description = "amcheck every btree index and report collation drift (exit 1 on either)"
+run = "heavy python -m candystore.dbhealth"
+
+[tasks."rollups:status"]
+description = "Show the full-history event rollups (ready, seeded_at, seed cost)"
+run = "python -m candystore.rollups status"
+
+[tasks."rollups:verify"]
+description = "Prove each rollup equals a full scan of events in one snapshot (reads the whole trail)"
+run = "heavy python -m candystore.rollups verify"
+
 [tasks."project:sync"]
 description = "Resolve trail working directories to pjangler registry projects"
 run = "python -m candystore.projects"
