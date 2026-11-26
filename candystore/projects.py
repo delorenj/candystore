@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import subprocess
 import threading
@@ -381,7 +382,18 @@ def place_work_dir(data: Any) -> None:
         _placed_dirs.add(work_dir)
 
 
+# `observed_work_dirs()` has to count every event: `WORK_DIR_EXPR` is an expression over
+# `data`, so Postgres cannot answer the GROUP BY from `idx_events_context_workdir_time`
+# alone (no index-only scan on an expression index) and reads the whole table. At 6.1M
+# events / 41 GB that is ~26 s, which the API's interactive 5 s statement cap cancels.
+# This is a batch job, not a request: give it the budget of its unit (TimeoutStartSec=5min)
+# minus a margin. An operator-set CANDYSTORE_STATEMENT_TIMEOUT_MS (or a tighter DSN
+# statement_timeout) still wins; see db._connect.
+SYNC_STATEMENT_TIMEOUT_MS = "240000"
+
+
 def main() -> int:
+    os.environ.setdefault("CANDYSTORE_STATEMENT_TIMEOUT_MS", SYNC_STATEMENT_TIMEOUT_MS)
     logging.basicConfig(level="INFO", format="%(message)s")
     try:
         counts = sync()
