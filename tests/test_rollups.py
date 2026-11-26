@@ -101,9 +101,9 @@ def test_seed_recovers_history_the_triggers_never_saw(db, sample_event):
     ids = [_post(sample_event, dirs[index % 5]) for index in range(23)]
     with cursor() as cur:
         cur.execute("UPDATE event_work_dirs SET seen = seen * 7 - 3")
-        cur.execute(
-            "DELETE FROM event_work_dirs WHERE work_dir = %s", (dirs[0],)
-        )  # sql-guard: reviewed
+        # Derived rollup rows in the disposable test DB, not audit data.
+        drop = "DELETE FROM event_work_dirs WHERE work_dir = %s"  # sql-guard: reviewed
+        cur.execute(drop, (dirs[0],))
         cur.execute("INSERT INTO event_work_dirs VALUES ('/home/delorenj/code/ghost', -4)")
     rollups.reset(rollups.WORK_DIRS)
     with pytest.raises(rollups.RollupNotReady):
